@@ -866,10 +866,10 @@ Largest Documents by Token Count:
             logger.info(f"Successfully split {json_path.name} into {len(output_files)} parts")
             
             return output_files
-        
-    except Exception as e:
-        logger.error(f"Error splitting JSON file: {e}")
-        return [json_path]
+            
+        except Exception as e:
+            logger.error(f"Error splitting JSON file: {e}")
+            return [json_path]
 
 class LawyerDocumentGenerator:
     """Generates Word documents for lawyers from medical records JSON data."""
