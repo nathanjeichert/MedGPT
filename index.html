@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Records Summary Tool</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Medical Records Summary Tool</h1>
+            <p class="subtitle">Professional medical record analysis and extraction</p>
+        </header>
+
+        <div class="main-content">
+            <form id="medicalRecordsForm" class="form-container">
+                <div class="form-section">
+                    <h2 class="section-title">Document Selection</h2>
+                    <div class="input-group">
+                        <label for="folderInput" class="input-label">
+                            <span class="label-text">Select Medical Records Folder</span>
+                            <span class="label-hint">Choose a folder containing medical documents (PDF, DOCX, images, etc.)</span>
+                        </label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="folderInput" webkitdirectory directory multiple class="file-input">
+                            <div class="file-input-display">
+                                <div class="file-icon">📁</div>
+                                <span class="file-text">Click to select folder</span>
+                            </div>
+                        </div>
+                        <div id="selectedFolder" class="selected-folder"></div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h2 class="section-title">Case Information</h2>
+                    <div class="input-group">
+                        <label for="clientName" class="input-label">
+                            <span class="label-text">Client Name</span>
+                            <span class="label-hint">Client name for document titles (e.g., "Smith, John")</span>
+                        </label>
+                        <input 
+                            type="text" 
+                            id="clientName" 
+                            class="text-input single-line" 
+                            placeholder="Smith, John"
+                        />
+                    </div>
+                    <div class="input-group">
+                        <label for="casePrompt" class="input-label">
+                            <span class="label-text">Case Description & Injury Focus</span>
+                            <span class="label-hint">Briefly describe the case and specify which injury or condition is at issue</span>
+                        </label>
+                        <textarea 
+                            id="casePrompt" 
+                            class="text-input" 
+                            rows="4" 
+                            placeholder="Example: Motor vehicle accident on 01/15/2023. Patient sustained lower back injuries including herniated disc at L4-L5. Please focus on records related to back pain, spinal treatment, and related complications."
+                        ></textarea>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h2 class="section-title">Processing Options</h2>
+                    <div class="checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="ocrEnabled" checked>
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Enable OCR for scanned documents</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="autoSplit" checked>
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Auto-split large results (75k words / 30MB limit)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="generateLawyerDocs" checked>
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Generate lawyer Word documents (Overview & Chronology)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="processBtn">
+                        <span class="btn-text">Process Medical Records</span>
+                        <div class="btn-spinner" style="display: none;"></div>
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="clearBtn">
+                        Clear Form
+                    </button>
+                </div>
+            </form>
+
+            <div id="progressSection" class="progress-section" style="display: none;">
+                <h3>Processing Progress</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div id="progressText" class="progress-text">Initializing...</div>
+                <div id="progressDetails" class="progress-details"></div>
+            </div>
+
+            <div id="resultsSection" class="results-section" style="display: none;">
+                <h3>Processing Results</h3>
+                <div class="results-summary">
+                    <div class="summary-card">
+                        <h4>Processing Summary</h4>
+                        <div id="summaryStats"></div>
+                    </div>
+                </div>
+                <div class="results-actions">
+                    <h4>Download Options:</h4>
+                    <div class="download-buttons">
+                        <button class="btn btn-success" id="downloadJsonBtn">
+                            📄 Download JSON Summary
+                        </button>
+                        <button class="btn btn-success" id="downloadOverviewBtn">
+                            📋 Download Medical Overview (.docx)
+                        </button>
+                        <button class="btn btn-success" id="downloadChronologyBtn">
+                            📊 Download Medical Chronology (.docx)
+                        </button>
+                        <button class="btn btn-secondary" id="viewBtn">
+                            👁️ View Results
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <p>&copy; 2025 Medical Records Analysis Tool. Professional medical document processing.</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

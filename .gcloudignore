@@ -1,0 +1,82 @@
+# This file specifies files that are intentionally untracked by gcloud
+# when doing builds.
+
+# Python bytecode and cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+/tmp/
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Cache files
+*.cache
+.cache/
+
+# OCR cache files
+*.ocr_cache.txt
+
+# Large test files (if any)
+test_data/
+sample_files/
+
+# Runtime directories
+uploads/
+downloads/
+output/
