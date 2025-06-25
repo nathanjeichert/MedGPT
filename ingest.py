@@ -16,9 +16,6 @@ import logging
 # External dependencies
 import openai
 from openai import OpenAI
-import PyPDF2
-import pytesseract
-from PIL import Image
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -26,29 +23,17 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 import hashlib
 from io import BytesIO
 import tiktoken
+import base64
 try:
-    import fitz  # PyMuPDF for better PDF handling
+    import fitz  # PyMuPDF for PDF chunking
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    print("Warning: PyMuPDF not installed. OCR for scanned PDFs will be limited.")
+    print("Warning: PyMuPDF not installed. PDF chunking will be limited.")
 
-# Configure Tesseract path for Windows
-import platform
-if platform.system() == 'Windows':
-    # Try common installation paths
-    import os
-    possible_paths = [
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        r'C:\Users\NathanEichert\AppData\Local\Tesseract-OCR\tesseract.exe',
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            pytesseract.pytesseract.tesseract_cmd = path
-            break
-    else:
-        print("Warning: Tesseract not found in common locations. Please set the path manually.")
+# OpenAI API limits for PDF processing
+MAX_PDF_PAGES = 100
+MAX_PDF_SIZE_MB = 32
 
 # Configure logging
 logging.basicConfig(
@@ -57,364 +42,146 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class DocumentProcessor:
-    """Handles extraction of text from various document formats."""
+class PDFProcessor:
+    """Handles direct PDF processing using OpenAI's multimodal API."""
     
-    def __init__(self):
-        self.supported_formats = {
-            '.pdf': self._extract_pdf,
-            '.docx': self._extract_docx,
-            '.doc': self._extract_docx,  # python-docx can handle .doc files
-            '.txt': self._extract_text,
-            '.md': self._extract_text,
-        }
+    def __init__(self, openai_client: OpenAI):
+        self.client = openai_client
+        self.uploaded_files = []  # Track uploaded files for cleanup
         
-    def extract_text(self, filepath: Path) -> str:
-        """Extract text from a file based on its extension."""
-        ext = filepath.suffix.lower()
-        
-        if ext not in self.supported_formats:
-            logger.warning(f"Unsupported format: {ext} for file {filepath}")
-            return ""
-            
-        try:
-            return self.supported_formats[ext](filepath)
-        except Exception as e:
-            logger.error(f"Error processing {filepath}: {e}")
-            return ""
+    def __del__(self):
+        """Clean up uploaded files when processor is destroyed."""
+        self.cleanup_uploaded_files()
     
-    def _extract_pdf(self, filepath: Path) -> str:
-        """
-        Extract text from a PDF file page by page with clear page markers.
-        Returns text with explicit page separators for accurate page citation.
-        """
-        text = ""
-        
-        # If a cached version exists (meaning we've OCR'd it before), use it.
-        cache_path = filepath.with_suffix('.pdf.ocr_cache.txt')
-        if cache_path.exists():
-            logger.info(f"Using OCR cache for {filepath}")
-            return cache_path.read_text(encoding='utf-8')
-
-        if not PYMUPDF_AVAILABLE:
-            logger.warning("PyMuPDF not installed. Using legacy PyPDF2 for text extraction. Per-page OCR is disabled.")
+    def cleanup_uploaded_files(self):
+        """Delete all uploaded files from OpenAI."""
+        for file_id in self.uploaded_files:
             try:
-                with open(filepath, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    for page_num, page in enumerate(pdf_reader.pages):
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += f"\n=== PAGE {page_num + 1} START ===\n{page_text}\n=== PAGE {page_num + 1} END ===\n"
-                return text
+                self.client.files.delete(file_id)
+                logger.info(f"Deleted uploaded file: {file_id}")
             except Exception as e:
-                logger.error(f"Legacy PDF extraction error for {filepath}: {e}")
-                return ""
-
-        # --- Main logic using PyMuPDF for per-page text/OCR ---
-        ocr_performed_on_any_page = False
-        try:
-            pdf_document = fitz.open(str(filepath))
-            
-            for page_num in range(len(pdf_document)):
-                page = pdf_document[page_num]
-                page_number = page_num + 1
-                
-                # 1. Try to extract text directly from the page.
-                page_text = page.get_text().strip()
-                
-                # 2. If text is sparse (e.g., <20 chars), it's likely a scanned image. OCR it.
-                if len(page_text) < 20:
-                    logger.info(f"Page {page_number} of {filepath} has little/no text; attempting OCR.")
-                    ocr_performed_on_any_page = True
-                    
-                    try:
-                        # Render page to an image for better OCR results.
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x DPI
-                        img_data = pix.tobytes("png")
-                        image = Image.open(BytesIO(img_data))
-                        
-                        ocr_text = pytesseract.image_to_string(image)
-                        
-                        if ocr_text.strip():
-                            text += f"\n=== PAGE {page_number} START ===\n{ocr_text}\n=== PAGE {page_number} END ===\n"
-                        else:
-                            text += f"\n=== PAGE {page_number} START ===\n[No text found on this page]\n=== PAGE {page_number} END ===\n"
-                    except Exception as ocr_error:
-                        logger.error(f"OCR failed for page {page_number} of {filepath}: {ocr_error}")
-                        text += f"\n=== PAGE {page_number} START ===\n[OCR failed for this page]\n=== PAGE {page_number} END ===\n"
-                else:
-                    # 3. If text was found, use it with clear page markers.
-                    text += f"\n=== PAGE {page_number} START ===\n{page_text}\n=== PAGE {page_number} END ===\n"
-                    
-            pdf_document.close()
-            
-            # If we performed any OCR, cache the full text content for future runs.
-            if ocr_performed_on_any_page:
-                logger.info(f"Caching OCR results for {filepath} to {cache_path}")
-                cache_path.write_text(text, encoding='utf-8')
-                
-        except Exception as e:
-            logger.error(f"PDF extraction error for {filepath}: {e}")
-        
-        return text
+                logger.warning(f"Failed to delete file {file_id}: {e}")
+        self.uploaded_files.clear()
     
-    def _extract_docx(self, filepath: Path) -> str:
-        """Extract text from DOCX file with page estimation."""
-        try:
-            doc = Document(filepath)
-            paragraphs = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
-            
-            # Estimate pages based on content (roughly 500 words per page)
-            total_text = "\n".join(paragraphs)
-            word_count = len(total_text.split())
-            estimated_pages = max(1, (word_count // 500) + 1)
-            
-            if estimated_pages == 1:
-                return f"\n=== PAGE 1 START ===\n{total_text}\n=== PAGE 1 END ===\n"
-            else:
-                # Split content across estimated pages
-                lines_per_page = max(1, len(paragraphs) // estimated_pages)
-                result = ""
-                
-                for page_num in range(estimated_pages):
-                    start_idx = page_num * lines_per_page
-                    end_idx = start_idx + lines_per_page if page_num < estimated_pages - 1 else len(paragraphs)
-                    
-                    if start_idx < len(paragraphs):
-                        page_content = "\n".join(paragraphs[start_idx:end_idx])
-                        result += f"\n=== PAGE {page_num + 1} START ===\n{page_content}\n=== PAGE {page_num + 1} END ===\n"
-                
-                return result
-                
-        except Exception as e:
-            logger.error(f"DOCX extraction error for {filepath}: {e}")
-            return ""
-    
-    def _extract_text(self, filepath: Path) -> str:
-        """Extract text from plain text file."""
-        try:
-            return filepath.read_text(encoding='utf-8')
-        except Exception as e:
-            logger.error(f"Text extraction error for {filepath}: {e}")
-            return ""
-    
-
-class MedicalRecordsSummarizer:
-    """Generates AI summaries of medical records using OpenAI's Responses API."""
-    
-    def __init__(self, api_key: str):
-        self.client = OpenAI(api_key=api_key)
-        self.model = "gpt-4.1-nano-2025-04-14"  # Using the cheap, fast nano model
-        # Initialize tokenizer for accurate token counting
-        # GPT-4.1 uses the same tokenizer as GPT-4
-        self.encoding = tiktoken.encoding_for_model("gpt-4")
-    
-    def _get_page_count(self, filepath: Path = None) -> int:
-        """Estimate page count for a document."""
-        if not filepath or not filepath.exists():
-            return 1
-        
-        ext = filepath.suffix.lower()
-        if ext == '.pdf':
-            try:
-                if PYMUPDF_AVAILABLE:
-                    import fitz
-                    doc = fitz.open(str(filepath))
-                    count = len(doc)
-                    doc.close()
-                    return count
-                else:
-                    with open(filepath, 'rb') as file:
-                        pdf_reader = PyPDF2.PdfReader(file)
-                        return len(pdf_reader.pages)
-            except:
-                return 1
-        elif ext in ['.docx', '.doc']:
-            # Rough estimate for Word docs
-            try:
-                size_kb = filepath.stat().st_size / 1024
-                return max(1, int(size_kb / 20))  # ~20KB per page estimate
-            except:
-                return 1
-        else:
-            return 1
-    
-    def _make_hashable(self, item):
-        """
-        Convert model-generated dicts/lists into a deterministic string
-        so they can live in sets and JSON side-by-side.
-        """
-        if isinstance(item, dict):
-            name = item.get("name") or item.get("party") or str(item)
-            role = item.get("role") or item.get("position")
-            return f"{name} ({role})" if role else name
-        return str(item)
-    
-    def _validate_and_fix_page_citations(self, result: Dict, content: str, filepath: Path = None) -> Dict:
-        """Validate and fix page citations in the result."""
-        # Count actual pages in content
-        page_markers = content.count("=== PAGE") // 2  # Each page has START and END
-        actual_page_count = max(1, page_markers)
-        
-        # Update page count if it's wrong
-        if result.get("page_count", 0) != actual_page_count:
-            logger.info(f"Correcting page count from {result.get('page_count', 0)} to {actual_page_count}")
-            result["page_count"] = actual_page_count
-        
-        # Validate and fix page citations in records
-        if "records" in result and isinstance(result["records"], list):
-            for record in result["records"]:
-                if "pages_found_on" in record:
-                    pages = record["pages_found_on"]
-                    
-                    # Ensure it's a list
-                    if not isinstance(pages, list):
-                        pages = [pages] if pages else [1]
-                    
-                    # Ensure all page numbers are valid integers within range
-                    valid_pages = []
-                    for page in pages:
-                        try:
-                            page_num = int(page)
-                            if 1 <= page_num <= actual_page_count:
-                                valid_pages.append(page_num)
-                            else:
-                                logger.warning(f"Invalid page number {page_num}, document has {actual_page_count} pages")
-                        except (ValueError, TypeError):
-                            logger.warning(f"Invalid page number format: {page}")
-                    
-                    # If no valid pages found, default to page 1
-                    if not valid_pages:
-                        valid_pages = [1]
-                        logger.warning("No valid page numbers found, defaulting to page 1")
-                    
-                    record["pages_found_on"] = sorted(list(set(valid_pages)))
-                else:
-                    # Add default page if missing
-                    record["pages_found_on"] = [1]
-                    logger.info("Added missing page citation, defaulting to page 1")
-        
-        return result
-    
-    def _improve_page_citations_with_content_analysis(self, result: Dict, content: str) -> Dict:
-        """Improve page citations by analyzing where quoted text actually appears in the content."""
-        if "records" not in result or not isinstance(result["records"], list):
-            return result
-        
-        # Extract page content mapping
-        page_contents = {}
-        lines = content.split('\n')
-        current_page = None
-        current_content = []
-        
-        for line in lines:
-            if line.strip().startswith("=== PAGE") and "START ===" in line:
-                # Extract page number
-                try:
-                    page_num = int(line.split("PAGE")[1].split("START")[0].strip())
-                    current_page = page_num
-                    current_content = []
-                except (ValueError, IndexError):
-                    continue
-            elif line.strip().startswith("=== PAGE") and "END ===" in line:
-                if current_page is not None:
-                    page_contents[current_page] = '\n'.join(current_content)
-                current_page = None
-                current_content = []
-            elif current_page is not None:
-                current_content.append(line)
-        
-        # Analyze each record for better page citations
-        for record in result["records"]:
-            if "notes_from_visit" in record and record["notes_from_visit"]:
-                quoted_text = record["notes_from_visit"].strip()
-                if len(quoted_text) > 10:  # Only analyze substantial quotes
-                    found_pages = []
-                    
-                    # Check which pages contain this quoted text
-                    for page_num, page_content in page_contents.items():
-                        # Look for the quote or significant portions of it
-                        quote_words = quoted_text.lower().split()
-                        if len(quote_words) >= 3:  # Look for 3+ word sequences
-                            for i in range(len(quote_words) - 2):
-                                three_word_sequence = ' '.join(quote_words[i:i+3])
-                                if three_word_sequence in page_content.lower():
-                                    found_pages.append(page_num)
-                                    break
-                    
-                    if found_pages:
-                        # Update page citations with found pages
-                        original_pages = record.get("pages_found_on", [])
-                        improved_pages = sorted(list(set(found_pages)))
-                        
-                        if improved_pages != original_pages:
-                            logger.info(f"Improved page citation from {original_pages} to {improved_pages} based on quoted text analysis")
-                            record["pages_found_on"] = improved_pages
-        
-        return result
-
-    def count_tokens(self, text: str) -> int:
-        """Count tokens in a text string."""
-        try:
-            return len(self.encoding.encode(text))
-        except Exception as e:
-            logger.warning(f"Token counting failed: {e}, using approximate count")
-            # Fallback to rough estimate if tiktoken fails
-            return len(text) // 4
-        
-    def summarize_document(self, filename: str, content: str, doc_type: str, filepath: Path = None, case_prompt: str = "") -> Dict[str, Any]:
-        """Generate a structured summary of a medical document with per-record extraction."""
-        
-        # Count tokens in the content
-        token_count = self.count_tokens(content)
-        
-        if not content or len(content.strip()) < 50:
+    def get_pdf_info(self, filepath: Path) -> Dict[str, Any]:
+        """Get PDF information (page count, size) without processing."""
+        if not PYMUPDF_AVAILABLE:
+            logger.warning("PyMuPDF not available for PDF info extraction")
             return {
-                "filename": filename,
-                "dates_covered": "Unknown",
-                "hospital_facility_provider": "Unknown", 
-                "page_count": self._get_page_count(filepath),
-                "overall_summary": "Document too short or empty",
-                "records": [],
-                "token_count": token_count
+                "page_count": 1,
+                "size_mb": filepath.stat().st_size / (1024 * 1024),
+                "needs_chunking": False
             }
         
-        # Truncate very long documents to fit context window
-        max_chars = 50000  # Conservative limit for nano model
-        is_truncated = False
-        if len(content) > max_chars:
-            # Find the last complete page marker before truncation
-            truncated_content = content[:max_chars]
-            last_page_end = truncated_content.rfind("=== PAGE")
-            if last_page_end > 0:
-                # Find the next "END ===" after the last page marker
-                end_marker = truncated_content.find("END ===", last_page_end)
-                if end_marker > 0:
-                    content = truncated_content[:end_marker + 7]  # Include "END ==="
-                else:
-                    content = truncated_content
-            else:
-                content = truncated_content
+        try:
+            doc = fitz.open(str(filepath))
+            page_count = len(doc)
+            size_mb = filepath.stat().st_size / (1024 * 1024)
+            doc.close()
             
-            content += "\n\n[DOCUMENT TRUNCATED - Only pages shown above were analyzed for page citations]"
-            is_truncated = True
+            needs_chunking = page_count > MAX_PDF_PAGES or size_mb > MAX_PDF_SIZE_MB
+            
+            return {
+                "page_count": page_count,
+                "size_mb": size_mb,
+                "needs_chunking": needs_chunking
+            }
+        except Exception as e:
+            logger.error(f"Error getting PDF info for {filepath}: {e}")
+            return {
+                "page_count": 1,
+                "size_mb": filepath.stat().st_size / (1024 * 1024),
+                "needs_chunking": False
+            }
+    
+    def chunk_pdf(self, filepath: Path) -> List[Path]:
+        """Split PDF into chunks if it exceeds OpenAI limits."""
+        if not PYMUPDF_AVAILABLE:
+            logger.warning("PyMuPDF not available for PDF chunking")
+            return [filepath]
         
-        prompt = f"""Analyze this medical document and extract structured information about individual medical records/visits.
+        info = self.get_pdf_info(filepath)
+        if not info["needs_chunking"]:
+            return [filepath]
+        
+        chunks = []
+        try:
+            doc = fitz.open(str(filepath))
+            total_pages = len(doc)
+            pages_per_chunk = MAX_PDF_PAGES
+            
+            chunk_num = 0
+            for start_page in range(0, total_pages, pages_per_chunk):
+                end_page = min(start_page + pages_per_chunk - 1, total_pages - 1)
+                chunk_num += 1
+                
+                # Create new PDF with pages in range
+                chunk_doc = fitz.open()
+                chunk_doc.insert_pdf(doc, from_page=start_page, to_page=end_page)
+                
+                # Save chunk with descriptive name
+                chunk_filename = f"{filepath.stem}_chunk_{chunk_num}_pages_{start_page+1}-{end_page+1}.pdf"
+                chunk_path = filepath.parent / chunk_filename
+                chunk_doc.save(str(chunk_path))
+                chunk_doc.close()
+                
+                chunks.append(chunk_path)
+                logger.info(f"Created chunk {chunk_num}: {chunk_filename} (pages {start_page+1}-{end_page+1})")
+            
+            doc.close()
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Error chunking PDF {filepath}: {e}")
+            return [filepath]
+    
+    def upload_pdf_to_openai(self, filepath: Path) -> str:
+        """Upload PDF file to OpenAI and return file ID."""
+        try:
+            with open(filepath, 'rb') as file:
+                uploaded_file = self.client.files.create(
+                    file=file,
+                    purpose="user_data"
+                )
+            
+            file_id = uploaded_file.id
+            self.uploaded_files.append(file_id)
+            logger.info(f"Uploaded {filepath.name} to OpenAI with file ID: {file_id}")
+            return file_id
+            
+        except Exception as e:
+            logger.error(f"Error uploading {filepath}: {e}")
+            raise
+    
+    def process_pdf_with_openai(self, filepath: Path, case_prompt: str, original_filename: str = None, page_offset: int = 0) -> Dict:
+        """Process a PDF file directly through OpenAI's multimodal API."""
+        filename = original_filename or filepath.name
+        
+        try:
+            # Upload PDF to OpenAI
+            file_id = self.upload_pdf_to_openai(filepath)
+            
+            # Get PDF info for prompt context
+            info = self.get_pdf_info(filepath)
+            
+            # Create prompt for direct PDF processing
+            prompt = f"""Analyze this PDF medical document and extract structured information about individual medical records/visits.
 
-IMPORTANT: The document content includes explicit page markers in the format "=== PAGE X START ===" and "=== PAGE X END ===". Use these markers to accurately determine which page(s) contain each piece of information.
+IMPORTANT INSTRUCTIONS:
+1. You are viewing the actual PDF pages directly - analyze both text and visual elements
+2. Cite accurate page numbers based on the actual PDF page numbers you see
+3. If this is a chunk of a larger document, add {page_offset} to all page numbers you cite
 
 Case Context: {case_prompt}
-Filename: {filename}
-
-Content:
-{content}
+Original Filename: {filename}
+{'Chunk file showing pages starting from page ' + str(page_offset + 1) if page_offset > 0 else 'Complete document'}
 
 Provide a JSON response with the following structure:
 
-1. "filename": The document filename
+1. "filename": The original document filename ({filename})
 2. "dates_covered": Date range that this document covers (e.g., "01/2023 - 06/2023")
 3. "hospital_facility_provider": Name of the hospital, treatment facility, or care provider
-4. "page_count": Total number of pages (count the page markers in the content)
+4. "page_count": Total number of pages you can see in this PDF
 5. "overall_summary": 3-5 sentence summary of the entire document
 6. "records": Array of individual medical records found in the document. For each record:
    - "record_type": One of: "primary_care_visit", "emergency_room_visit", "physical_therapy_visit", "specialist_visit", "other"
@@ -423,61 +190,43 @@ Provide a JSON response with the following structure:
    - "medication_treatment_changes": Any changes in medication or treatment mentioned
    - "injury_condition_description": Description of injury/condition/recovery status
    - "mentions_target_injury": Boolean - is this record relevant to the case? (See RELEVANCE CRITERIA below)
-   - "pages_found_on": CRITICAL - List the exact page numbers where this record information appears based on the page markers (e.g., [1, 2])
+   - "pages_found_on": CRITICAL - List the exact page numbers where this record information appears {'(add ' + str(page_offset) + ' to each page number you see)' if page_offset > 0 else ''}
    - "record_summary": 2-3 sentence summary of this specific record
-
-CRITICAL INSTRUCTIONS FOR PAGE CITATIONS:
-- Carefully read the page markers "=== PAGE X START ===" and "=== PAGE X END ===" in the content
-- For each piece of information you extract, note which page(s) it came from based on these markers
-- If a medical record spans multiple pages, include all relevant page numbers in "pages_found_on"
-- If you quote text from "notes_from_visit", ensure the page numbers in "pages_found_on" accurately reflect where that text appears
-- Double-check that page numbers are accurate by verifying against the page markers in the content
 
 RELEVANCE CRITERIA FOR "mentions_target_injury" FIELD:
 A medical record should be marked as relevant (mentions_target_injury: true) if it meets ANY of these criteria:
 
-1. INCIDENT MENTION: Contains any mention or description of the specific incident at issue described in the case context above
-
-2. INJURY/TREATMENT MENTION: Contains mention or description of:
-   - The specific injuries identified in the case context
-   - Treatment, therapy, or medical care for those injuries
-   - Symptoms, pain, or limitations related to those injuries
-   - Diagnostic tests or imaging related to those injuries
-
-3. RELATED CONDITIONS: Contains information about:
-   - Pre-existing conditions that could affect the injury claim or recovery amount
-   - Post-occurring conditions that developed after the incident
-   - Any medical condition that may have a positive or negative impact on liability
-   - Any medical condition that may affect damages in the present case
-   - Baseline health status before the incident
-   - Complications or secondary conditions arising from the target injuries
-
-Examples of relevant records:
-- Visits mentioning the incident or target injuries directly
-- Physical therapy for the target injury area
-- Pain management related to target injuries
-- Pre-existing arthritis that could affect back injury claims
-- Depression developing after the incident
-- Prior surgeries in the same body area
-- Baseline imaging showing pre-existing conditions
-- Medication changes due to the incident/injuries
+1. INCIDENT MENTION: Contains any mention or description of the specific incident described in the case context
+2. INJURY/TREATMENT MENTION: Contains mention of the specific injuries, treatment, symptoms, or limitations related to those injuries
+3. RELATED CONDITIONS: Contains information about pre-existing conditions, post-occurring conditions, or any medical condition that may impact liability or damages
 
 Be INCLUSIVE in determining relevance - if there's any reasonable connection to the case, mark it as relevant.
 
-Focus on extracting individual visits, treatments, or distinct medical encounters as separate records. Quote medical notes exactly as they appear in the document and cite the correct page numbers."""
-        
-        try:
+Focus on extracting individual visits, treatments, or distinct medical encounters as separate records. Quote medical notes exactly as they appear and cite the correct page numbers."""
+
+            # Make API call with PDF file
             response = self.client.responses.create(
-                model=self.model,
-                input=prompt,
-                temperature=0.3  # Lower temperature for factual extraction
-                # Remove max_tokens - not supported in Responses API
+                model="gpt-4.1-nano",  # Use nano model for cost efficiency
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_file",
+                                "file_id": file_id
+                            },
+                            {
+                                "type": "input_text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ]
             )
             
-            # Extract the response text
+            # Extract and parse response
             output_text = response.output_text if hasattr(response, 'output_text') else str(response)
             
-            # Try to parse JSON from response
             try:
                 # Find JSON content in the response
                 import re
@@ -492,8 +241,8 @@ Focus on extracting individual visits, treatments, or distinct medical encounter
                     "filename": filename,
                     "dates_covered": "Unknown",
                     "hospital_facility_provider": "Unknown",
-                    "page_count": self._get_page_count(filepath),
-                    "overall_summary": output_text[:200],
+                    "page_count": info["page_count"],
+                    "overall_summary": output_text[:500],
                     "records": []
                 }
             
@@ -501,29 +250,277 @@ Focus on extracting individual visits, treatments, or distinct medical encounter
             if "filename" not in result:
                 result["filename"] = filename
             if "page_count" not in result:
-                result["page_count"] = self._get_page_count(filepath)
+                result["page_count"] = info["page_count"]
             
-            result["token_count"] = token_count
-            result["full_text_tokens"] = token_count  # Store original document token count
+            # Adjust page numbers if this was a chunk
+            if page_offset > 0:
+                self._adjust_page_numbers(result, page_offset)
             
-            # Validate and fix page citations
-            result = self._validate_and_fix_page_citations(result, content, filepath)
-            
-            # Improve page citations by analyzing quoted text
-            result = self._improve_page_citations_with_content_analysis(result, content)
-
             return result
             
         except Exception as e:
-            logger.error(f"Error summarizing {filename}: {e}")
+            logger.error(f"Error processing PDF {filepath}: {e}")
             return {
                 "filename": filename,
                 "dates_covered": "Error",
-                "hospital_facility_provider": "Error", 
-                "page_count": self._get_page_count(filepath),
-                "overall_summary": f"Error during summarization: {str(e)}",
-                "records": [],
-                "token_count": token_count
+                "hospital_facility_provider": "Error",
+                "page_count": 1,
+                "overall_summary": f"Error during processing: {str(e)}",
+                "records": []
+            }
+    
+    def _adjust_page_numbers(self, result: Dict, page_offset: int):
+        """Adjust page numbers in result for chunked files."""
+        if "records" in result and isinstance(result["records"], list):
+            for record in result["records"]:
+                if "pages_found_on" in record:
+                    pages = record["pages_found_on"]
+                    if isinstance(pages, list):
+                        record["pages_found_on"] = [p + page_offset for p in pages if isinstance(p, int)]
+                    elif isinstance(pages, int):
+                        record["pages_found_on"] = [pages + page_offset]
+    
+
+class MedicalRecordsSummarizer:
+    """Generates AI summaries of medical records using OpenAI's multimodal API."""
+    
+    def __init__(self, api_key: str):
+        self.client = OpenAI(api_key=api_key)
+        self.model = "gpt-4.1-nano"  # Use nano model for cost efficiency with multimodal capabilities
+        self.pdf_processor = PDFProcessor(self.client)
+        # Initialize tokenizer for token counting
+        self.encoding = tiktoken.encoding_for_model("gpt-4")
+    
+    def cleanup(self):
+        """Clean up any uploaded files."""
+        self.pdf_processor.cleanup_uploaded_files()
+    
+    
+    def _make_hashable(self, item):
+        """
+        Convert model-generated dicts/lists into a deterministic string
+        so they can live in sets and JSON side-by-side.
+        """
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("party") or str(item)
+            role = item.get("role") or item.get("position")
+            return f"{name} ({role})" if role else name
+        return str(item)
+    
+
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in a text string."""
+        try:
+            return len(self.encoding.encode(text))
+        except Exception as e:
+            logger.warning(f"Token counting failed: {e}, using approximate count")
+            # Fallback to rough estimate if tiktoken fails
+            return len(text) // 4
+        
+    def summarize_document(self, filename: str, filepath: Path, case_prompt: str = "") -> Dict[str, Any]:
+        """Generate a structured summary of a medical document using direct PDF processing."""
+        
+        if not filepath or not filepath.exists():
+            return {
+                "filename": filename,
+                "dates_covered": "Error",
+                "hospital_facility_provider": "Error",
+                "page_count": 1,
+                "overall_summary": "File not found",
+                "records": []
+            }
+        
+        ext = filepath.suffix.lower()
+        
+        # Handle PDF files with direct multimodal processing
+        if ext == '.pdf':
+            try:
+                # Check if PDF needs chunking
+                pdf_info = self.pdf_processor.get_pdf_info(filepath)
+                
+                if pdf_info["needs_chunking"]:
+                    logger.info(f"PDF {filename} needs chunking: {pdf_info['page_count']} pages, {pdf_info['size_mb']:.1f}MB")
+                    return self._process_chunked_pdf(filepath, case_prompt)
+                else:
+                    # Process as single PDF
+                    return self.pdf_processor.process_pdf_with_openai(filepath, case_prompt)
+                    
+            except Exception as e:
+                logger.error(f"Error processing PDF {filename}: {e}")
+                return {
+                    "filename": filename,
+                    "dates_covered": "Error",
+                    "hospital_facility_provider": "Error",
+                    "page_count": 1,
+                    "overall_summary": f"Error processing PDF: {str(e)}",
+                    "records": []
+                }
+        
+        # Handle non-PDF files (DOCX, TXT) - convert to text for now
+        elif ext in ['.docx', '.doc', '.txt', '.md']:
+            logger.info(f"Processing non-PDF file {filename} - converting to text")
+            return self._process_text_document(filepath, case_prompt)
+        
+        else:
+            logger.warning(f"Unsupported file format: {ext}")
+            return {
+                "filename": filename,
+                "dates_covered": "Unsupported",
+                "hospital_facility_provider": "Unsupported",
+                "page_count": 1,
+                "overall_summary": f"Unsupported file format: {ext}",
+                "records": []
+            }
+    
+    def _process_chunked_pdf(self, filepath: Path, case_prompt: str) -> Dict[str, Any]:
+        """Process a large PDF by chunking it into smaller pieces."""
+        try:
+            # Create chunks
+            chunks = self.pdf_processor.chunk_pdf(filepath)
+            
+            if len(chunks) == 1:
+                # No chunking needed after all
+                return self.pdf_processor.process_pdf_with_openai(chunks[0], case_prompt)
+            
+            # Process each chunk
+            all_records = []
+            total_pages = 0
+            overall_summaries = []
+            provider_names = []
+            date_ranges = []
+            
+            for i, chunk_path in enumerate(chunks):
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}: {chunk_path.name}")
+                
+                # Calculate page offset for this chunk
+                page_offset = i * MAX_PDF_PAGES
+                
+                # Process chunk
+                chunk_result = self.pdf_processor.process_pdf_with_openai(
+                    chunk_path, case_prompt, filepath.name, page_offset
+                )
+                
+                # Aggregate results
+                if chunk_result.get("records"):
+                    all_records.extend(chunk_result["records"])
+                
+                if chunk_result.get("overall_summary"):
+                    overall_summaries.append(f"Pages {page_offset+1}-{page_offset+chunk_result.get('page_count', 0)}: {chunk_result['overall_summary']}")
+                
+                if chunk_result.get("hospital_facility_provider") and chunk_result["hospital_facility_provider"] != "Unknown":
+                    provider_names.append(chunk_result["hospital_facility_provider"])
+                
+                if chunk_result.get("dates_covered") and chunk_result["dates_covered"] != "Unknown":
+                    date_ranges.append(chunk_result["dates_covered"])
+                
+                total_pages += chunk_result.get("page_count", 0)
+                
+                # Clean up chunk file
+                try:
+                    chunk_path.unlink()
+                except:
+                    pass
+            
+            # Consolidate results
+            consolidated_provider = max(set(provider_names), key=provider_names.count) if provider_names else "Multiple Providers"
+            consolidated_dates = " to ".join(sorted(set(date_ranges))) if date_ranges else "Unknown"
+            consolidated_summary = f"Large document processed in {len(chunks)} chunks. " + " ".join(overall_summaries)
+            
+            return {
+                "filename": filepath.name,
+                "dates_covered": consolidated_dates,
+                "hospital_facility_provider": consolidated_provider,
+                "page_count": total_pages,
+                "overall_summary": consolidated_summary,
+                "records": all_records
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing chunked PDF {filepath}: {e}")
+            return {
+                "filename": filepath.name,
+                "dates_covered": "Error",
+                "hospital_facility_provider": "Error",
+                "page_count": 1,
+                "overall_summary": f"Error processing chunked PDF: {str(e)}",
+                "records": []
+            }
+    
+    def _process_text_document(self, filepath: Path, case_prompt: str) -> Dict[str, Any]:
+        """Process non-PDF documents by extracting text and using text-based processing."""
+        try:
+            # Extract text content
+            if filepath.suffix.lower() in ['.docx', '.doc']:
+                doc = Document(filepath)
+                content = '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+            else:  # .txt, .md
+                content = filepath.read_text(encoding='utf-8')
+            
+            if not content or len(content.strip()) < 50:
+                return {
+                    "filename": filepath.name,
+                    "dates_covered": "Unknown",
+                    "hospital_facility_provider": "Unknown",
+                    "page_count": 1,
+                    "overall_summary": "Document too short or empty",
+                    "records": []
+                }
+            
+            # Use simple text-based processing with GPT-4.1-nano
+            prompt = f"""Analyze this medical document text and extract structured information about individual medical records/visits.
+
+Case Context: {case_prompt}
+Filename: {filepath.name}
+
+Content:
+{content[:20000]}  # Limit content size
+
+Provide a JSON response with the following structure:
+1. "filename": The document filename
+2. "dates_covered": Date range covered (e.g., "01/2023 - 06/2023")
+3. "hospital_facility_provider": Name of the care provider
+4. "page_count": Estimate of pages (default to 1 for text documents)
+5. "overall_summary": 3-5 sentence summary
+6. "records": Array of medical records with standard fields (use page 1 for all page citations)
+
+Focus on extracting individual visits or medical encounters as separate records."""
+
+            response = self.client.responses.create(
+                model=self.model,
+                input=prompt,
+                temperature=0.3
+            )
+            
+            output_text = response.output_text if hasattr(response, 'output_text') else str(response)
+            
+            try:
+                import re
+                json_match = re.search(r'\{.*\}', output_text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    result["filename"] = filepath.name
+                    return result
+                else:
+                    raise ValueError("No JSON found")
+            except:
+                return {
+                    "filename": filepath.name,
+                    "dates_covered": "Unknown",
+                    "hospital_facility_provider": "Unknown",
+                    "page_count": 1,
+                    "overall_summary": output_text[:500],
+                    "records": []
+                }
+                
+        except Exception as e:
+            logger.error(f"Error processing text document {filepath}: {e}")
+            return {
+                "filename": filepath.name,
+                "dates_covered": "Error",
+                "hospital_facility_provider": "Error",
+                "page_count": 1,
+                "overall_summary": f"Error processing document: {str(e)}",
+                "records": []
             }
     
     
@@ -583,7 +580,6 @@ class MedicalRecordsEngine:
     """Main engine for processing medical records files."""
     
     def __init__(self, api_key: str):
-        self.processor = DocumentProcessor()
         self.summarizer = MedicalRecordsSummarizer(api_key)
         
     def should_update(self, filepath: Path, summary_data: Dict) -> bool:
@@ -665,32 +661,31 @@ class MedicalRecordsEngine:
                             folder_documents.append(summary["document_registry"][relative_path])
                         continue
                     
-                    # Extract text
+                    # Process document directly (no text extraction needed)
                     logger.info(f"Processing: {filepath.name}")
-                    text_content = self.processor.extract_text(filepath)
                     
-                    if text_content:
-                        # Generate summary
-                        doc_summary = self.summarizer.summarize_document(
-                            filepath.name,
-                            text_content,
-                            folder_name,
-                            filepath,  # Pass filepath for image handling
-                            case_prompt  # Pass case prompt for context
-                        )
-                        
-                        # Add metadata
-                        doc_summary["relative_path"] = relative_path
-                        doc_summary["last_modified"] = filepath.stat().st_mtime
-                        doc_summary["size_bytes"] = filepath.stat().st_size
-                        
-                        # Update registry
-                        summary["document_registry"][relative_path] = doc_summary
-                        folder_documents.append(doc_summary)
-                        
-                        # Aggregate key information
-                        summary["key_parties"].update(doc_summary.get("parties", []))
-                        summary["key_dates"].update(doc_summary.get("dates", []))
+                    # Generate summary using direct PDF processing or text processing
+                    doc_summary = self.summarizer.summarize_document(
+                        filepath.name,
+                        filepath,  # Pass filepath for direct processing
+                        case_prompt  # Pass case prompt for context
+                    )
+                    
+                    # Add metadata
+                    doc_summary["relative_path"] = relative_path
+                    doc_summary["last_modified"] = filepath.stat().st_mtime
+                    doc_summary["size_bytes"] = filepath.stat().st_size
+                    
+                    # Update registry
+                    summary["document_registry"][relative_path] = doc_summary
+                    folder_documents.append(doc_summary)
+                    
+                    # Aggregate key information (records instead of parties/dates)
+                    for record in doc_summary.get("records", []):
+                        if record.get("hospital_facility_provider"):
+                            summary["key_parties"].add(record["hospital_facility_provider"])
+                        if record.get("date_of_visit"):
+                            summary["key_dates"].add(record["date_of_visit"])
             
             # Generate folder summary
             if folder_documents:
