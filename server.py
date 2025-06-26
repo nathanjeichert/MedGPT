@@ -9,11 +9,13 @@ import tempfile
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file, render_template_string, Response
 from werkzeug.utils import secure_filename
 import zipfile
+from google.cloud import storage
 
 # Import our medical records processing
 from ingest import MedicalRecordsEngine, LawyerDocumentGenerator
@@ -27,9 +29,14 @@ if not os.environ.get('OPENAI_API_KEY'):
     print("Example: export OPENAI_API_KEY='your-api-key-here'")
     raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
+# Initialize Cloud Storage client
+storage_client = storage.Client()
+BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'medgpt-uploads')
+
 # Store results and progress temporarily
 results_store = {}
 progress_store = {}
+upload_sessions = {}  # Track multi-file upload sessions
 
 @app.route('/')
 def index():
@@ -73,6 +80,65 @@ def health_check():
     """Health check endpoint for Cloud Run."""
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
+@app.route('/api/upload-session', methods=['POST'])
+def create_upload_session():
+    """Create a new upload session and return signed URLs for file uploads."""
+    try:
+        data = request.get_json()
+        files = data.get('files', [])
+        
+        if not files:
+            return jsonify({'error': 'No files specified'}), 400
+        
+        # Create upload session
+        session_id = str(uuid.uuid4())
+        upload_sessions[session_id] = {
+            'files': [],
+            'created_at': datetime.now(),
+            'status': 'pending'
+        }
+        
+        # Generate signed URLs for each file
+        bucket = storage_client.bucket(BUCKET_NAME)
+        signed_urls = []
+        
+        for file_info in files:
+            filename = secure_filename(file_info.get('name', ''))
+            if not filename:
+                continue
+                
+            # Create unique blob name
+            blob_name = f"uploads/{session_id}/{filename}"
+            blob = bucket.blob(blob_name)
+            
+            # Generate signed URL for upload (valid for 15 minutes)
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=15),
+                method="PUT",
+                content_type=file_info.get('type', 'application/octet-stream')
+            )
+            
+            signed_urls.append({
+                'filename': filename,
+                'signed_url': signed_url,
+                'blob_name': blob_name
+            })
+            
+            upload_sessions[session_id]['files'].append({
+                'filename': filename,
+                'blob_name': blob_name,
+                'uploaded': False
+            })
+        
+        return jsonify({
+            'session_id': session_id,
+            'upload_urls': signed_urls
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/progress/<task_id>')
 def get_progress(task_id):
     """Get processing progress via Server-Sent Events."""
@@ -92,6 +158,145 @@ def get_progress(task_id):
             time.sleep(0.5)  # Update every 500ms
     
     return Response(generate(), mimetype='text/event-stream')
+
+def process_medical_records_from_gcs(task_id, form_data, session_id):
+    """Process medical records from Cloud Storage asynchronously."""
+    try:
+        progress_store[task_id] = {'progress': 0, 'status': 'starting', 'message': 'Initializing...'}
+        
+        # Get form data
+        client_name = form_data.get('clientName', 'Client')
+        case_prompt = form_data.get('casePrompt', '')
+        auto_split = form_data.get('autoSplit') == 'true'
+        generate_lawyer_docs = form_data.get('generateLawyerDocs') == 'true'
+        
+        # Get API key from environment
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'OpenAI API key not found'}
+            return
+        
+        progress_store[task_id] = {'progress': 5, 'status': 'processing', 'message': 'Downloading files from Cloud Storage...'}
+        
+        # Create temporary directory for processing
+        temp_dir = Path(tempfile.mkdtemp())
+        
+        try:
+            # Download files from Cloud Storage
+            session = upload_sessions.get(session_id)
+            if not session:
+                progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'Upload session not found'}
+                return
+            
+            bucket = storage_client.bucket(BUCKET_NAME)
+            downloaded_files = []
+            
+            for file_info in session['files']:
+                blob_name = file_info['blob_name']
+                filename = file_info['filename']
+                
+                # Download file from GCS
+                blob = bucket.blob(blob_name)
+                if not blob.exists():
+                    continue
+                    
+                # Create local file path
+                local_path = temp_dir / filename
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Download file
+                blob.download_to_filename(local_path)
+                downloaded_files.append(local_path)
+            
+            if not downloaded_files:
+                progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'No files found in Cloud Storage'}
+                return
+            
+            progress_store[task_id] = {'progress': 15, 'status': 'processing', 'message': f'Downloaded {len(downloaded_files)} files, starting processing...'}
+            
+            # Process files (rest of the existing logic)
+            engine = MedicalRecordsEngine(api_key=api_key)
+            
+            # Process the case
+            summary = process_case_with_progress(engine, temp_dir, case_prompt, task_id)
+            
+            # Generate lawyer documents if requested
+            lawyer_docs = []
+            if generate_lawyer_docs:
+                progress_store[task_id] = {'progress': 85, 'status': 'processing', 'message': 'Generating lawyer documents...'}
+                
+                doc_generator = LawyerDocumentGenerator(api_key=api_key)
+                lawyer_docs = doc_generator.generate_documents(
+                    case_summary=summary,
+                    client_name=client_name,
+                    output_dir=temp_dir
+                )
+            
+            # Split large JSON files if needed
+            split_files = []
+            if auto_split:
+                progress_store[task_id] = {'progress': 90, 'status': 'processing', 'message': 'Splitting large files...'}
+                
+                json_files = list(temp_dir.glob("*.json"))
+                for json_file in json_files:
+                    try:
+                        with open(json_file, 'r') as f:
+                            data = json.load(f)
+                        
+                        if len(str(data)) > 10_000_000:  # 10MB threshold
+                            parts = engine.split_json_file(json_file, max_size=5_000_000)
+                            split_files.extend(parts)
+                        else:
+                            split_files.append(json_file)
+                    except:
+                        split_files.append(json_file)
+            else:
+                split_files = list(temp_dir.glob("*.json"))
+            
+            # Store results
+            result_id = str(uuid.uuid4())
+            results_store[result_id] = {
+                'temp_dir': temp_dir,
+                'split_files': split_files,
+                'lawyer_docs': lawyer_docs,
+                'client_name': client_name,
+                'created_at': datetime.now()
+            }
+            
+            progress_store[task_id] = {
+                'progress': 100,
+                'status': 'completed',
+                'message': 'Processing complete!',
+                'result_id': result_id,
+                'stats': {
+                    'files_processed': len(downloaded_files),
+                    'json_files': len(split_files),
+                    'lawyer_documents': len(lawyer_docs),
+                    'client_name': client_name,
+                    'tokens_used': summary.get('total_case_tokens', 0),
+                    'estimated_cost': summary.get('estimated_cost', 'N/A')
+                }
+            }
+            
+            # Clean up Cloud Storage files
+            for file_info in session['files']:
+                try:
+                    blob = bucket.blob(file_info['blob_name'])
+                    blob.delete()
+                except:
+                    pass  # Ignore cleanup errors
+            
+            # Remove upload session
+            if session_id in upload_sessions:
+                del upload_sessions[session_id]
+            
+        except Exception as e:
+            # Clean up temp directory on error
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': str(e)}
+            
+    except Exception as e:
+        progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': str(e)}
 
 def process_medical_records_async(task_id, form_data, files):
     """Process medical records asynchronously with progress tracking."""
@@ -231,29 +436,30 @@ def process_case_with_progress(engine, case_path, case_prompt, task_id):
 
 @app.route('/api/process', methods=['POST'])
 def process_medical_records():
-    """Start processing uploaded medical records asynchronously."""
+    """Start processing medical records from Cloud Storage."""
     try:
+        data = request.get_json()
+        
         # Get form data
         form_data = {
-            'clientName': request.form.get('clientName', 'Client'),
-            'casePrompt': request.form.get('casePrompt', ''),
-            'autoSplit': request.form.get('autoSplit'),
-            'generateLawyerDocs': request.form.get('generateLawyerDocs')
+            'clientName': data.get('clientName', 'Client'),
+            'casePrompt': data.get('casePrompt', ''),
+            'autoSplit': data.get('autoSplit'),
+            'generateLawyerDocs': data.get('generateLawyerDocs')
         }
         
-        # Get uploaded files
-        files = request.files.getlist('files')
-        if not files:
-            return jsonify({'error': 'No files uploaded'}), 400
+        # Get upload session ID
+        session_id = data.get('session_id')
+        if not session_id or session_id not in upload_sessions:
+            return jsonify({'error': 'Invalid or missing upload session'}), 400
         
         # Generate task ID
-        import uuid
         task_id = str(uuid.uuid4())
         
         # Start processing in background thread
         thread = threading.Thread(
-            target=process_medical_records_async,
-            args=(task_id, form_data, files)
+            target=process_medical_records_from_gcs,
+            args=(task_id, form_data, session_id)
         )
         thread.daemon = True
         thread.start()

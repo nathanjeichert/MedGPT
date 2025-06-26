@@ -143,51 +143,91 @@ class MedicalRecordsProcessor {
     }
 
     async processFiles(formData) {
-        this.updateProgress(0, 'Initializing processing...');
+        this.updateProgress(0, 'Preparing files for upload...');
         
         try {
-            // Create FormData for file upload
-            const uploadData = new FormData();
+            // Step 1: Create upload session and get signed URLs
+            const filesInfo = formData.files.map(file => ({
+                name: file.name,
+                type: file.type,
+                size: file.size
+            }));
             
-            // Add form fields
-            uploadData.append('clientName', formData.clientName);
-            uploadData.append('casePrompt', formData.casePrompt);
-            uploadData.append('autoSplit', formData.autoSplit);
-            uploadData.append('generateLawyerDocs', formData.generateLawyerDocs);
+            this.updateProgress(2, 'Creating upload session...');
             
-            // Add files
-            formData.files.forEach(file => {
-                uploadData.append('files', file, file.webkitRelativePath);
-            });
-            
-            this.updateProgress(5, 'Starting processing...');
-            
-            // Send to backend to start processing
-            const response = await fetch('/api/process', {
+            const sessionResponse = await fetch('/api/upload-session', {
                 method: 'POST',
-                body: uploadData
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ files: filesInfo })
             });
             
-            if (!response.ok) {
+            if (!sessionResponse.ok) {
+                throw new Error('Failed to create upload session');
+            }
+            
+            const sessionData = await sessionResponse.json();
+            const { session_id, upload_urls } = sessionData;
+            
+            // Step 2: Upload files directly to Cloud Storage
+            this.updateProgress(3, 'Uploading files to Cloud Storage...');
+            
+            const uploadPromises = upload_urls.map(async (urlInfo, index) => {
+                const file = formData.files[index];
+                const response = await fetch(urlInfo.signed_url, {
+                    method: 'PUT',
+                    body: file,
+                    headers: {
+                        'Content-Type': file.type
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to upload ${file.name}`);
+                }
+                
+                return urlInfo.filename;
+            });
+            
+            await Promise.all(uploadPromises);
+            this.updateProgress(5, 'Files uploaded, starting processing...');
+            
+            // Step 3: Start processing with Cloud Storage files
+            const processResponse = await fetch('/api/process', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: session_id,
+                    clientName: formData.clientName,
+                    casePrompt: formData.casePrompt,
+                    autoSplit: formData.autoSplit,
+                    generateLawyerDocs: formData.generateLawyerDocs
+                })
+            });
+            
+            if (!processResponse.ok) {
                 let errorMessage = 'Processing failed';
                 try {
-                    const contentType = response.headers.get('content-type');
+                    const contentType = processResponse.headers.get('content-type');
                     if (contentType && contentType.includes('application/json')) {
-                        const errorData = await response.json();
+                        const errorData = await processResponse.json();
                         errorMessage = errorData.error || errorMessage;
                     } else {
-                        const errorText = await response.text();
+                        const errorText = await processResponse.text();
                         console.error('Non-JSON error response:', errorText);
-                        errorMessage = `Server error (${response.status}): ${response.statusText}`;
+                        errorMessage = `Server error (${processResponse.status}): ${processResponse.statusText}`;
                     }
                 } catch (parseError) {
                     console.error('Failed to parse error response:', parseError);
-                    errorMessage = `Server error (${response.status}): ${response.statusText}`;
+                    errorMessage = `Server error (${processResponse.status}): ${processResponse.statusText}`;
                 }
                 throw new Error(errorMessage);
             }
             
-            const result = await response.json();
+            const result = await processResponse.json();
             
             if (result.success && result.task_id) {
                 // Start tracking progress with Server-Sent Events
