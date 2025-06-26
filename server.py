@@ -66,7 +66,7 @@ upload_sessions = {}  # Track multi-file upload sessions
 def index():
     """Serve the main HTML page."""
     try:
-        with open('index.html', 'r') as f:
+        with open('index.html', 'r', encoding='utf-8') as f:
             return f.read()
     except FileNotFoundError:
         return jsonify({'error': 'index.html not found'}), 500
@@ -75,7 +75,7 @@ def index():
 def styles():
     """Serve CSS file."""
     try:
-        with open('styles.css', 'r') as f:
+        with open('styles.css', 'r', encoding='utf-8') as f:
             return f.read(), 200, {'Content-Type': 'text/css'}
     except FileNotFoundError:
         return jsonify({'error': 'styles.css not found'}), 404
@@ -84,7 +84,7 @@ def styles():
 def script():
     """Serve JavaScript file."""
     try:
-        with open('script.js', 'r') as f:
+        with open('script.js', 'r', encoding='utf-8') as f:
             return f.read(), 200, {'Content-Type': 'application/javascript'}
     except FileNotFoundError:
         return jsonify({'error': 'script.js not found'}), 404
