@@ -28,20 +28,39 @@ progress_store = {}
 @app.route('/')
 def index():
     """Serve the main HTML page."""
-    with open('index.html', 'r') as f:
-        return f.read()
+    try:
+        with open('index.html', 'r') as f:
+            return f.read()
+    except FileNotFoundError:
+        return jsonify({'error': 'index.html not found'}), 500
 
 @app.route('/styles.css')
 def styles():
     """Serve CSS file."""
-    with open('styles.css', 'r') as f:
-        return f.read(), 200, {'Content-Type': 'text/css'}
+    try:
+        with open('styles.css', 'r') as f:
+            return f.read(), 200, {'Content-Type': 'text/css'}
+    except FileNotFoundError:
+        return jsonify({'error': 'styles.css not found'}), 404
 
 @app.route('/script.js')
 def script():
     """Serve JavaScript file."""
-    with open('script.js', 'r') as f:
-        return f.read(), 200, {'Content-Type': 'application/javascript'}
+    try:
+        with open('script.js', 'r') as f:
+            return f.read(), 200, {'Content-Type': 'application/javascript'}
+    except FileNotFoundError:
+        return jsonify({'error': 'script.js not found'}), 404
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors with JSON response."""
+    return jsonify({'error': 'Not found', 'status': 404}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors with JSON response."""
+    return jsonify({'error': 'Internal server error', 'status': 500}), 500
 
 @app.route('/health')
 def health_check():
