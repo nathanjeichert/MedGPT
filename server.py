@@ -15,10 +15,19 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file, render_template_string, Response
 from werkzeug.utils import secure_filename
 import zipfile
-from google.cloud import storage
 
 # Import our medical records processing
 from ingest import MedicalRecordsEngine, LawyerDocumentGenerator
+
+# Check if running locally (no Google Cloud)
+LOCAL_MODE = os.environ.get('LOCAL_MODE', 'false').lower() == 'true'
+
+if not LOCAL_MODE:
+    try:
+        from google.cloud import storage
+    except ImportError:
+        LOCAL_MODE = True
+        print("Google Cloud Storage not available, running in local mode")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max upload
@@ -29,14 +38,24 @@ if not os.environ.get('OPENAI_API_KEY'):
     print("Example: export OPENAI_API_KEY='your-api-key-here'")
     raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
-# Initialize Cloud Storage client 
+# Initialize Cloud Storage client or local storage
 BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'medgpt-uploads')
-try:
-    storage_client = storage.Client()
-    print(f"Cloud Storage client initialized for bucket: {BUCKET_NAME}")
-except Exception as e:
-    print(f"Warning: Could not initialize Cloud Storage client: {e}")
+LOCAL_UPLOAD_DIR = Path('./local_uploads')
+
+if LOCAL_MODE:
+    print("Running in LOCAL MODE - using local file storage instead of Google Cloud Storage")
+    LOCAL_UPLOAD_DIR.mkdir(exist_ok=True)
     storage_client = None
+else:
+    try:
+        storage_client = storage.Client()
+        print(f"Cloud Storage client initialized for bucket: {BUCKET_NAME}")
+    except Exception as e:
+        print(f"Warning: Could not initialize Cloud Storage client: {e}")
+        print("Falling back to LOCAL MODE")
+        LOCAL_MODE = True
+        LOCAL_UPLOAD_DIR.mkdir(exist_ok=True)
+        storage_client = None
 
 # Store results and progress temporarily
 results_store = {}
@@ -89,9 +108,6 @@ def health_check():
 def create_upload_session():
     """Create a new upload session for chunked uploads."""
     try:
-        if storage_client is None:
-            return jsonify({'error': 'Cloud Storage not available'}), 500
-            
         data = request.get_json()
         files = data.get('files', [])
         
@@ -106,7 +122,7 @@ def create_upload_session():
             'status': 'pending'
         }
         
-        # Prepare file upload endpoints instead of signed URLs
+        # Prepare file upload endpoints
         upload_endpoints = []
         
         for file_info in files:
@@ -114,18 +130,21 @@ def create_upload_session():
             if not filename:
                 continue
                 
-            # Create unique blob name
-            blob_name = f"uploads/{session_id}/{filename}"
+            # Create storage path (local or cloud)
+            if LOCAL_MODE:
+                storage_path = f"uploads/{session_id}/{filename}"
+            else:
+                storage_path = f"uploads/{session_id}/{filename}"
             
             upload_endpoints.append({
                 'filename': filename,
                 'upload_url': f'/api/upload/{session_id}/{filename}',
-                'blob_name': blob_name
+                'storage_path': storage_path
             })
             
             upload_sessions[session_id]['files'].append({
                 'filename': filename,
-                'blob_name': blob_name,
+                'storage_path': storage_path,
                 'uploaded': False
             })
         
@@ -138,12 +157,9 @@ def create_upload_session():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/upload/<session_id>/<filename>', methods=['PUT'])
-def upload_file_to_gcs(session_id, filename):
-    """Upload a file directly to Cloud Storage via the server."""
+def upload_file(session_id, filename):
+    """Upload a file to local storage or Cloud Storage."""
     try:
-        if storage_client is None:
-            return jsonify({'error': 'Cloud Storage not available'}), 500
-            
         if session_id not in upload_sessions:
             return jsonify({'error': 'Invalid upload session'}), 400
             
@@ -152,13 +168,25 @@ def upload_file_to_gcs(session_id, filename):
         if not file_data:
             return jsonify({'error': 'No file data received'}), 400
             
-        # Upload to Cloud Storage
-        blob_name = f"uploads/{session_id}/{secure_filename(filename)}"
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
+        secure_name = secure_filename(filename)
         
-        # Upload file data
-        blob.upload_from_string(file_data, content_type=request.content_type)
+        if LOCAL_MODE:
+            # Save to local file system
+            upload_path = LOCAL_UPLOAD_DIR / "uploads" / session_id
+            upload_path.mkdir(parents=True, exist_ok=True)
+            file_path = upload_path / secure_name
+            
+            with open(file_path, 'wb') as f:
+                f.write(file_data)
+        else:
+            # Upload to Cloud Storage
+            if storage_client is None:
+                return jsonify({'error': 'Cloud Storage not available'}), 500
+                
+            blob_name = f"uploads/{session_id}/{secure_name}"
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_string(file_data, content_type=request.content_type)
         
         # Mark file as uploaded in session
         session = upload_sessions[session_id]
@@ -192,8 +220,8 @@ def get_progress(task_id):
     
     return Response(generate(), mimetype='text/event-stream')
 
-def process_medical_records_from_gcs(task_id, form_data, session_id):
-    """Process medical records from Cloud Storage asynchronously."""
+def process_medical_records_from_storage(task_id, form_data, session_id):
+    """Process medical records from local or cloud storage asynchronously."""
     try:
         progress_store[task_id] = {'progress': 0, 'status': 'starting', 'message': 'Initializing...'}
         
@@ -209,37 +237,54 @@ def process_medical_records_from_gcs(task_id, form_data, session_id):
             progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'OpenAI API key not found'}
             return
         
-        progress_store[task_id] = {'progress': 5, 'status': 'processing', 'message': 'Downloading files from Cloud Storage...'}
+        if LOCAL_MODE:
+            progress_store[task_id] = {'progress': 5, 'status': 'processing', 'message': 'Copying files from local storage...'}
+        else:
+            progress_store[task_id] = {'progress': 5, 'status': 'processing', 'message': 'Downloading files from Cloud Storage...'}
         
         # Create temporary directory for processing
         temp_dir = Path(tempfile.mkdtemp())
         
         try:
-            # Download files from Cloud Storage
+            # Get files from storage
             session = upload_sessions.get(session_id)
             if not session:
                 progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'Upload session not found'}
                 return
             
-            bucket = storage_client.bucket(BUCKET_NAME)
             downloaded_files = []
             
             for file_info in session['files']:
-                blob_name = file_info['blob_name']
+                storage_path = file_info['storage_path']
                 filename = file_info['filename']
                 
-                # Download file from GCS
-                blob = bucket.blob(blob_name)
-                if not blob.exists():
-                    continue
+                if LOCAL_MODE:
+                    # Copy from local storage
+                    source_path = LOCAL_UPLOAD_DIR / storage_path
+                    if not source_path.exists():
+                        continue
+                        
+                    # Create local file path in temp dir
+                    local_path = temp_dir / filename
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                # Create local file path
-                local_path = temp_dir / filename
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Download file
-                blob.download_to_filename(local_path)
-                downloaded_files.append(local_path)
+                    # Copy file
+                    shutil.copy2(source_path, local_path)
+                    downloaded_files.append(local_path)
+                else:
+                    # Download file from GCS
+                    bucket = storage_client.bucket(BUCKET_NAME)
+                    blob = bucket.blob(storage_path)
+                    if not blob.exists():
+                        continue
+                        
+                    # Create local file path
+                    local_path = temp_dir / filename
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Download file
+                    blob.download_to_filename(local_path)
+                    downloaded_files.append(local_path)
             
             if not downloaded_files:
                 progress_store[task_id] = {'progress': 0, 'status': 'error', 'message': 'No files found in Cloud Storage'}
@@ -311,11 +356,19 @@ def process_medical_records_from_gcs(task_id, form_data, session_id):
                 }
             }
             
-            # Clean up Cloud Storage files
+            # Clean up storage files
             for file_info in session['files']:
                 try:
-                    blob = bucket.blob(file_info['blob_name'])
-                    blob.delete()
+                    if LOCAL_MODE:
+                        # Delete local file
+                        local_file = LOCAL_UPLOAD_DIR / file_info['storage_path']
+                        if local_file.exists():
+                            local_file.unlink()
+                    else:
+                        # Delete from Cloud Storage
+                        bucket = storage_client.bucket(BUCKET_NAME)
+                        blob = bucket.blob(file_info['storage_path'])
+                        blob.delete()
                 except:
                     pass  # Ignore cleanup errors
             
@@ -491,7 +544,7 @@ def process_medical_records():
         
         # Start processing in background thread
         thread = threading.Thread(
-            target=process_medical_records_from_gcs,
+            target=process_medical_records_from_storage,
             args=(task_id, form_data, session_id)
         )
         thread.daemon = True
