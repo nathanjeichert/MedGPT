@@ -143,7 +143,7 @@ class MedicalRecordsProcessor {
     }
 
     async processFiles(formData) {
-        this.updateProgress(0, 'Preparing files for upload...');
+        console.log('Preparing files for upload...');
         
         try {
             // Step 1: Create upload session and get signed URLs
@@ -153,7 +153,7 @@ class MedicalRecordsProcessor {
                 size: file.size
             }));
             
-            this.updateProgress(2, 'Creating upload session...');
+            console.log('Creating upload session...');
             
             const sessionResponse = await fetch('/api/upload-session', {
                 method: 'POST',
@@ -171,7 +171,7 @@ class MedicalRecordsProcessor {
             const { session_id, upload_urls } = sessionData;
             
             // Step 2: Upload files directly to Cloud Storage
-            this.updateProgress(3, 'Uploading files to Cloud Storage...');
+            console.log('Uploading files to local storage...');
             
             const uploadPromises = upload_urls.map(async (urlInfo, index) => {
                 const file = formData.files[index];
@@ -191,7 +191,7 @@ class MedicalRecordsProcessor {
             });
             
             await Promise.all(uploadPromises);
-            this.updateProgress(5, 'Files uploaded, starting processing...');
+            console.log('Files uploaded, starting AI processing...');
             
             // Step 3: Start processing with Cloud Storage files
             const processResponse = await fetch('/api/process', {
@@ -230,9 +230,13 @@ class MedicalRecordsProcessor {
             const result = await processResponse.json();
             
             if (result.success && result.task_id) {
-                // Show simple completion message for local development
-                this.updateProgress(100, 'Processing complete! Check your downloads folder.');
-                this.showCompletionMessage();
+                // Handle real processing results
+                if (result.result) {
+                    this.currentResultId = result.result.result_id;
+                    this.showResults(result.result);
+                } else {
+                    alert('Processing started successfully!');
+                }
             } else {
                 throw new Error(result.error || 'Failed to start processing');
             }
@@ -256,8 +260,8 @@ class MedicalRecordsProcessor {
             downloadSection.style.display = 'block';
         }
         
-        // Show a simple message
-        this.showSuccess('Processing complete! Files have been processed and are ready for download.');
+        // Show a simple alert instead of undefined function
+        alert('Processing complete! Files have been processed and are ready for download.');
     }
 
     generateMockResults(formData) {
@@ -276,27 +280,12 @@ class MedicalRecordsProcessor {
         };
     }
 
-    updateProgress(percentage, text) {
-        const progressFill = document.getElementById('progressFill');
-        const progressText = document.getElementById('progressText');
-        
-        progressFill.style.width = percentage + '%';
-        progressText.textContent = `${percentage}% - ${text}`;
-    }
-
-    updateProgressDetails(details) {
-        const progressDetails = document.getElementById('progressDetails');
-        progressDetails.textContent = details;
-    }
+    // Progress functions removed for local development
 
     showProcessingState() {
-        const progressSection = document.getElementById('progressSection');
         const processBtn = document.getElementById('processBtn');
         const btnText = processBtn.querySelector('.btn-text');
         const btnSpinner = processBtn.querySelector('.btn-spinner');
-
-        progressSection.style.display = 'block';
-        progressSection.classList.add('fade-in');
         
         processBtn.disabled = true;
         btnText.textContent = 'Processing...';

@@ -254,11 +254,72 @@ def process_medical_records_sync(form_data, session_id):
         if not downloaded_files:
             raise RuntimeError('No files found in storage')
         
-        # Process files (simplified for local development)
+        # Process files with REAL OpenAI API calls
+        engine = MedicalRecordsEngine(api_key=api_key)
+        
+        # Process the case with real AI
+        summary = engine.process_case(temp_dir, case_prompt)
+        
+        # Generate lawyer documents if requested
+        lawyer_docs = []
+        if generate_lawyer_docs:
+            doc_generator = LawyerDocumentGenerator(api_key=api_key)
+            lawyer_docs = doc_generator.generate_documents(
+                case_summary=summary,
+                client_name=client_name,
+                output_dir=temp_dir
+            )
+        
+        # Split large JSON files if needed
+        split_files = []
+        if auto_split:
+            json_files = list(temp_dir.glob("*.json"))
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                    
+                    if len(str(data)) > 10_000_000:  # 10MB threshold
+                        parts = engine.split_json_file(json_file, max_size=5_000_000)
+                        split_files.extend(parts)
+                    else:
+                        split_files.append(json_file)
+                except:
+                    split_files.append(json_file)
+        else:
+            split_files = list(temp_dir.glob("*.json"))
+        
+        # Store results for download
+        result_id = str(uuid.uuid4())
+        results_store[result_id] = {
+            'temp_dir': temp_dir,
+            'split_files': split_files,
+            'lawyer_docs': lawyer_docs,
+            'client_name': client_name,
+            'created_at': datetime.now()
+        }
+        
+        # Clean up local upload files
+        for file_info in session['files']:
+            try:
+                local_file = LOCAL_UPLOAD_DIR / file_info['storage_path']
+                if local_file.exists():
+                    local_file.unlink()
+            except:
+                pass  # Ignore cleanup errors
+        
+        # Remove upload session
+        if session_id in upload_sessions:
+            del upload_sessions[session_id]
+        
         return {
             'files_processed': len(downloaded_files),
+            'json_files': len(split_files),
+            'lawyer_documents': len(lawyer_docs),
             'client_name': client_name,
-            'message': f'Successfully processed {len(downloaded_files)} files locally'
+            'result_id': result_id,
+            'tokens_used': summary.get('total_case_tokens', 0),
+            'estimated_cost': summary.get('estimated_cost', 'N/A')
         }
         
     except Exception as e:
