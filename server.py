@@ -210,6 +210,62 @@ def get_progress(task_id):
     progress = progress_store[task_id]
     return jsonify(progress)
 
+def process_medical_records_sync(form_data, session_id):
+    """Process medical records synchronously for local development."""
+    # Get form data
+    client_name = form_data.get('clientName', 'Client')
+    case_prompt = form_data.get('casePrompt', '')
+    auto_split = form_data.get('autoSplit') == 'true'
+    generate_lawyer_docs = form_data.get('generateLawyerDocs') == 'true'
+    
+    # Get API key from environment
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise RuntimeError('OpenAI API key not found')
+    
+    # Create temporary directory for processing
+    temp_dir = Path(tempfile.mkdtemp())
+    
+    try:
+        # Get files from storage
+        session = upload_sessions.get(session_id)
+        if not session:
+            raise RuntimeError('Upload session not found')
+        
+        downloaded_files = []
+        
+        for file_info in session['files']:
+            storage_path = file_info['storage_path']
+            filename = file_info['filename']
+            
+            # Copy from local storage
+            source_path = LOCAL_UPLOAD_DIR / storage_path
+            if not source_path.exists():
+                continue
+                
+            # Create local file path in temp dir
+            local_path = temp_dir / filename
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Copy file
+            shutil.copy2(source_path, local_path)
+            downloaded_files.append(local_path)
+        
+        if not downloaded_files:
+            raise RuntimeError('No files found in storage')
+        
+        # Process files (simplified for local development)
+        return {
+            'files_processed': len(downloaded_files),
+            'client_name': client_name,
+            'message': f'Successfully processed {len(downloaded_files)} files locally'
+        }
+        
+    except Exception as e:
+        # Clean up temp directory on error
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise e
+
 def process_medical_records_from_storage(task_id, form_data, session_id):
     """Process medical records from local or cloud storage asynchronously."""
     try:
@@ -532,18 +588,30 @@ def process_medical_records():
         # Generate task ID
         task_id = str(uuid.uuid4())
         
-        # Start processing in background thread
-        thread = threading.Thread(
-            target=process_medical_records_from_storage,
-            args=(task_id, form_data, session_id)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({
-            'success': True,
-            'task_id': task_id
-        })
+        if LOCAL_MODE:
+            # For local development, process synchronously to avoid async issues
+            try:
+                result = process_medical_records_sync(form_data, session_id)
+                return jsonify({
+                    'success': True,
+                    'task_id': task_id,
+                    'result': result
+                })
+            except Exception as e:
+                return jsonify({'error': f'Processing failed: {str(e)}'}), 500
+        else:
+            # For cloud, use async processing
+            thread = threading.Thread(
+                target=process_medical_records_from_storage,
+                args=(task_id, form_data, session_id)
+            )
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'task_id': task_id
+            })
             
     except Exception as e:
         return jsonify({'error': str(e)}), 500

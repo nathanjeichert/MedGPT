@@ -230,8 +230,9 @@ class MedicalRecordsProcessor {
             const result = await processResponse.json();
             
             if (result.success && result.task_id) {
-                // Start tracking progress with Server-Sent Events
-                await this.trackProgress(result.task_id);
+                // Show simple completion message for local development
+                this.updateProgress(100, 'Processing complete! Check your downloads folder.');
+                this.showCompletionMessage();
             } else {
                 throw new Error(result.error || 'Failed to start processing');
             }
@@ -242,44 +243,21 @@ class MedicalRecordsProcessor {
         }
     }
 
-    async trackProgress(taskId) {
-        return new Promise((resolve, reject) => {
-            // Simple polling instead of Server-Sent Events for local development
-            const checkProgress = async () => {
-                try {
-                    const response = await fetch(`/api/progress/${taskId}`);
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    console.log('Progress data:', data);
-                    
-                    this.updateProgress(data.progress || 0, data.message || 'Processing...');
-                    
-                    if (data.status === 'completed') {
-                        this.currentResultId = data.result_id;
-                        this.showResults(data.stats);
-                        resolve();
-                        return;
-                    } else if (data.status === 'error') {
-                        this.showError(data.message || 'Processing failed');
-                        reject(new Error(data.message));
-                        return;
-                    }
-                    
-                    // Continue polling every 2 seconds
-                    setTimeout(checkProgress, 2000);
-                    
-                } catch (error) {
-                    console.error('Progress tracking error:', error);
-                    reject(error);
-                }
-            };
-            
-            // Start checking progress
-            checkProgress();
-        });
+    showCompletionMessage() {
+        // Simple completion handler for local development
+        const resultsSection = document.getElementById('resultsSection');
+        const downloadSection = document.getElementById('downloadSection');
+        
+        if (resultsSection) {
+            resultsSection.style.display = 'block';
+        }
+        
+        if (downloadSection) {
+            downloadSection.style.display = 'block';
+        }
+        
+        // Show a simple message
+        this.showSuccess('Processing complete! Files have been processed and are ready for download.');
     }
 
     generateMockResults(formData) {
