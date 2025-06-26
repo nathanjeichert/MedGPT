@@ -29,9 +29,16 @@ if not os.environ.get('OPENAI_API_KEY'):
     print("Example: export OPENAI_API_KEY='your-api-key-here'")
     raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
-# Initialize Cloud Storage client
-storage_client = storage.Client()
+# Initialize Cloud Storage client (only if we have a bucket name)
 BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'medgpt-uploads')
+try:
+    storage_client = storage.Client()
+    # Test the connection
+    bucket = storage_client.bucket(BUCKET_NAME)
+    print(f"Successfully connected to Cloud Storage bucket: {BUCKET_NAME}")
+except Exception as e:
+    print(f"Warning: Could not initialize Cloud Storage client: {e}")
+    storage_client = None
 
 # Store results and progress temporarily
 results_store = {}
@@ -84,6 +91,9 @@ def health_check():
 def create_upload_session():
     """Create a new upload session and return signed URLs for file uploads."""
     try:
+        if storage_client is None:
+            return jsonify({'error': 'Cloud Storage not available'}), 500
+            
         data = request.get_json()
         files = data.get('files', [])
         
