@@ -21,6 +21,12 @@ from ingest import MedicalRecordsEngine, LawyerDocumentGenerator
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max upload
 
+# Check for OpenAI API key at startup
+if not os.environ.get('OPENAI_API_KEY'):
+    print("ERROR: Please set OPENAI_API_KEY environment variable")
+    print("Example: export OPENAI_API_KEY='your-api-key-here'")
+    raise RuntimeError("OPENAI_API_KEY environment variable is required")
+
 # Store results and progress temporarily
 results_store = {}
 progress_store = {}
@@ -71,6 +77,11 @@ def health_check():
 def get_progress(task_id):
     """Get processing progress via Server-Sent Events."""
     def generate():
+        # Check if task exists, if not send error and exit
+        if task_id not in progress_store:
+            yield f"data: {json.dumps({'status': 'error', 'message': 'Task not found'})}\n\n"
+            return
+            
         while task_id in progress_store:
             progress = progress_store[task_id]
             yield f"data: {json.dumps(progress)}\n\n"
@@ -80,7 +91,7 @@ def get_progress(task_id):
                 
             time.sleep(0.5)  # Update every 500ms
     
-    return Response(generate(), mimetype='text/plain')
+    return Response(generate(), mimetype='text/event-stream')
 
 def process_medical_records_async(task_id, form_data, files):
     """Process medical records asynchronously with progress tracking."""

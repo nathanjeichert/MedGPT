@@ -169,8 +169,22 @@ class MedicalRecordsProcessor {
             });
             
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Processing failed');
+                let errorMessage = 'Processing failed';
+                try {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const errorData = await response.json();
+                        errorMessage = errorData.error || errorMessage;
+                    } else {
+                        const errorText = await response.text();
+                        console.error('Non-JSON error response:', errorText);
+                        errorMessage = `Server error (${response.status}): ${response.statusText}`;
+                    }
+                } catch (parseError) {
+                    console.error('Failed to parse error response:', parseError);
+                    errorMessage = `Server error (${response.status}): ${response.statusText}`;
+                }
+                throw new Error(errorMessage);
             }
             
             const result = await response.json();
@@ -207,7 +221,9 @@ class MedicalRecordsProcessor {
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
                                 try {
-                                    const data = JSON.parse(line.substring(6));
+                                    const jsonData = line.substring(6);
+                                    console.log('Raw progress data:', jsonData);
+                                    const data = JSON.parse(jsonData);
                                     
                                     this.updateProgress(data.progress || 0, data.message || 'Processing...');
                                     
@@ -222,7 +238,8 @@ class MedicalRecordsProcessor {
                                         return;
                                     }
                                 } catch (e) {
-                                    console.warn('Failed to parse progress data:', line);
+                                    console.error('Failed to parse progress data:', line, 'Error:', e);
+                                    console.error('Raw chunk received:', chunk);
                                 }
                             }
                         }
