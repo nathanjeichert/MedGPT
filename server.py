@@ -19,6 +19,13 @@ import zipfile
 # Import our medical records processing
 from ingest import MedicalRecordsEngine, LawyerDocumentGenerator
 
+# Clear proxy environment variables to prevent OpenAI client issues
+proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+for var in proxy_vars:
+    if var in os.environ:
+        print(f"Clearing proxy variable: {var}")
+        del os.environ[var]
+
 # Check if running locally (no Google Cloud)
 LOCAL_MODE = os.environ.get('LOCAL_MODE', 'false').lower() == 'true'
 
@@ -275,22 +282,8 @@ def process_medical_records_sync(form_data, session_id):
         
         # Process files with REAL OpenAI API calls
         print("Initializing MedicalRecordsEngine...")
-        
-        # Clear any proxy environment variables that might interfere
-        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
-        original_proxy_values = {}
-        for var in proxy_vars:
-            if var in os.environ:
-                original_proxy_values[var] = os.environ[var]
-                del os.environ[var]
-        
-        try:
-            engine = MedicalRecordsEngine(api_key=api_key)
-            print("MedicalRecordsEngine initialized successfully")
-        finally:
-            # Restore proxy environment variables
-            for var, value in original_proxy_values.items():
-                os.environ[var] = value
+        engine = MedicalRecordsEngine(api_key=api_key)
+        print("MedicalRecordsEngine initialized successfully")
         
         # Process the case with real AI
         summary = engine.process_case(temp_dir, case_prompt)
