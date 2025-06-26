@@ -175,7 +175,7 @@ class MedicalRecordsProcessor {
             
             const uploadPromises = upload_urls.map(async (urlInfo, index) => {
                 const file = formData.files[index];
-                const response = await fetch(urlInfo.signed_url, {
+                const response = await fetch(urlInfo.upload_url, {
                     method: 'PUT',
                     body: file,
                     headers: {

@@ -87,7 +87,7 @@ def health_check():
 
 @app.route('/api/upload-session', methods=['POST'])
 def create_upload_session():
-    """Create a new upload session and return signed URLs for file uploads."""
+    """Create a new upload session for chunked uploads."""
     try:
         if storage_client is None:
             return jsonify({'error': 'Cloud Storage not available'}), 500
@@ -106,9 +106,8 @@ def create_upload_session():
             'status': 'pending'
         }
         
-        # Generate signed URLs for each file
-        bucket = storage_client.bucket(BUCKET_NAME)
-        signed_urls = []
+        # Prepare file upload endpoints instead of signed URLs
+        upload_endpoints = []
         
         for file_info in files:
             filename = secure_filename(file_info.get('name', ''))
@@ -117,19 +116,10 @@ def create_upload_session():
                 
             # Create unique blob name
             blob_name = f"uploads/{session_id}/{filename}"
-            blob = bucket.blob(blob_name)
             
-            # Generate signed URL for upload (valid for 15 minutes)
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=15),
-                method="PUT",
-                content_type=file_info.get('type', 'application/octet-stream')
-            )
-            
-            signed_urls.append({
+            upload_endpoints.append({
                 'filename': filename,
-                'signed_url': signed_url,
+                'upload_url': f'/api/upload/{session_id}/{filename}',
                 'blob_name': blob_name
             })
             
@@ -141,8 +131,43 @@ def create_upload_session():
         
         return jsonify({
             'session_id': session_id,
-            'upload_urls': signed_urls
+            'upload_urls': upload_endpoints
         })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload/<session_id>/<filename>', methods=['PUT'])
+def upload_file_to_gcs(session_id, filename):
+    """Upload a file directly to Cloud Storage via the server."""
+    try:
+        if storage_client is None:
+            return jsonify({'error': 'Cloud Storage not available'}), 500
+            
+        if session_id not in upload_sessions:
+            return jsonify({'error': 'Invalid upload session'}), 400
+            
+        # Get the file data from request
+        file_data = request.get_data()
+        if not file_data:
+            return jsonify({'error': 'No file data received'}), 400
+            
+        # Upload to Cloud Storage
+        blob_name = f"uploads/{session_id}/{secure_filename(filename)}"
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        
+        # Upload file data
+        blob.upload_from_string(file_data, content_type=request.content_type)
+        
+        # Mark file as uploaded in session
+        session = upload_sessions[session_id]
+        for file_info in session['files']:
+            if file_info['filename'] == filename:
+                file_info['uploaded'] = True
+                break
+        
+        return jsonify({'success': True, 'filename': filename})
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
