@@ -95,8 +95,8 @@ gcloud run deploy medgpt \
 ### Resource Limits
 
 The application is configured with:
-- **Memory**: 4GB (handles large medical record files)
-- **CPU**: 2 vCPUs (for parallel processing)
+- **Memory**: 2GB (optimized for direct PDF processing)
+- **CPU**: 1 vCPU (efficient multimodal processing)
 - **Timeout**: 60 minutes (for large document processing)
 - **Max Instances**: 10 (auto-scaling)
 

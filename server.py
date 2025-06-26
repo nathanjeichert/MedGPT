@@ -71,7 +71,6 @@ def process_medical_records_async(task_id, form_data, files):
         # Get form data
         client_name = form_data.get('clientName', 'Client')
         case_prompt = form_data.get('casePrompt', '')
-        ocr_enabled = form_data.get('ocrEnabled') == 'true'
         auto_split = form_data.get('autoSplit') == 'true'
         generate_lawyer_docs = form_data.get('generateLawyerDocs') == 'true'
         
@@ -208,7 +207,6 @@ def process_medical_records():
         form_data = {
             'clientName': request.form.get('clientName', 'Client'),
             'casePrompt': request.form.get('casePrompt', ''),
-            'ocrEnabled': request.form.get('ocrEnabled'),
             'autoSplit': request.form.get('autoSplit'),
             'generateLawyerDocs': request.form.get('generateLawyerDocs')
         }

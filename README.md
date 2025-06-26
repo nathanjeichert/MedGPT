@@ -4,9 +4,9 @@ A professional AI-powered tool for analyzing medical records and generating stru
 
 ## Features
 
-- **AI-Powered Analysis**: Uses OpenAI GPT-4.1-nano for medical record analysis
-- **PDF Focus**: Optimized for PDF medical records with OCR support
-- **OCR Support**: Extracts text from scanned documents and images
+- **AI-Powered Analysis**: Uses OpenAI GPT-4.1-nano multimodal model for medical record analysis
+- **Direct PDF Processing**: Advanced multimodal analysis of PDF documents including scanned pages
+- **Visual Document Analysis**: Model sees actual page layouts, images, tables, and handwriting
 - **Structured Output**: Generates JSON with detailed medical record extraction
 - **Lawyer Documents**: Creates professional Word documents for legal use
 - **Auto-Split**: Splits large results to stay under size/word limits
@@ -28,12 +28,7 @@ A professional AI-powered tool for analyzing medical records and generating stru
    ```bash
    pip install -r requirements.txt
    ```
-3. **Install Tesseract OCR** (for scanned document processing):
-   - **Windows**: Download from https://github.com/UB-Mannheim/tesseract/wiki
-   - **macOS**: `brew install tesseract`
-   - **Linux**: `sudo apt-get install tesseract-ocr`
-
-4. **Set OpenAI API Key**:
+3. **Set OpenAI API Key**:
    ```bash
    export OPENAI_API_KEY="your-api-key-here"
    ```
@@ -95,7 +90,7 @@ The tool extracts individual medical records with these fields:
 
 ## Supported File Types
 
-- **PDF**: Primary focus - text extraction with OCR fallback for scanned pages
+- **PDF**: Primary focus - direct multimodal processing handles text, images, and scanned content
 - **Word Documents**: .docx and .doc files (supplementary)
 - **Text Files**: .txt and .md files (supplementary)
 
@@ -103,7 +98,6 @@ The tool extracts individual medical records with these fields:
 
 - Python 3.8+
 - OpenAI API key
-- Tesseract OCR (for image/scanned document processing)
 - 2GB+ RAM recommended for large document sets
 - **50GB upload limit** - handles massive medical record collections
 
@@ -117,7 +111,7 @@ Uses OpenAI GPT-4.1-nano ($0.10 per 1M tokens). Typical costs:
 ## Error Handling
 
 - Graceful handling of corrupted files
-- OCR fallback for unreadable PDFs
+- Advanced multimodal processing for scanned documents
 - Detailed logging for troubleshooting
 - Automatic cleanup of temporary files
 
@@ -130,9 +124,9 @@ Uses OpenAI GPT-4.1-nano ($0.10 per 1M tokens). Typical costs:
 ## Troubleshooting
 
 1. **"No OpenAI API key found"**: Set the OPENAI_API_KEY environment variable
-2. **OCR not working**: Install Tesseract OCR and ensure it's in your PATH
-3. **Large files failing**: Enable auto-split option
-4. **Memory errors**: Process smaller batches of files
+2. **Large files failing**: Enable auto-split option (automatically chunks PDFs >100 pages or >32MB)
+3. **Memory errors**: Process smaller batches of files
+4. **PDF processing errors**: Ensure PDFs are not corrupted or password-protected
 
 ## Legal Notice
 

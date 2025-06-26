@@ -130,7 +130,6 @@ class MedicalRecordsProcessor {
     collectFormData() {
         const clientName = document.getElementById('clientName').value.trim();
         const casePrompt = document.getElementById('casePrompt').value.trim();
-        const ocrEnabled = document.getElementById('ocrEnabled').checked;
         const autoSplit = document.getElementById('autoSplit').checked;
         const generateLawyerDocs = document.getElementById('generateLawyerDocs').checked;
 
@@ -138,7 +137,6 @@ class MedicalRecordsProcessor {
             files: this.selectedFiles,
             clientName: clientName,
             casePrompt: casePrompt,
-            ocrEnabled: ocrEnabled,
             autoSplit: autoSplit,
             generateLawyerDocs: generateLawyerDocs
         };
@@ -154,7 +152,6 @@ class MedicalRecordsProcessor {
             // Add form fields
             uploadData.append('clientName', formData.clientName);
             uploadData.append('casePrompt', formData.casePrompt);
-            uploadData.append('ocrEnabled', formData.ocrEnabled);
             uploadData.append('autoSplit', formData.autoSplit);
             uploadData.append('generateLawyerDocs', formData.generateLawyerDocs);
             
@@ -420,7 +417,6 @@ class MedicalRecordsProcessor {
         document.getElementById('folderInput').value = '';
         document.getElementById('clientName').value = '';
         document.getElementById('casePrompt').value = '';
-        document.getElementById('ocrEnabled').checked = true;
         document.getElementById('autoSplit').checked = true;
         document.getElementById('generateLawyerDocs').checked = true;
 
