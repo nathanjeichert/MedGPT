@@ -6,6 +6,7 @@ This branch allows you to run the Medical Records Summary Tool locally on Window
 
 1. **Python 3.9+** installed
 2. **OpenAI API Key** (get from https://platform.openai.com/api-keys)
+3. **No C++ build tools required** - uses pure Python dependencies
 
 ## Setup Instructions
 
@@ -16,7 +17,7 @@ This branch allows you to run the Medical Records Summary Tool locally on Window
    git checkout local-development
    ```
 
-2. **Install dependencies**:
+2. **Install dependencies** (pure Python, no C++ compiler needed):
    ```bash
    pip install -r requirements-local.txt
    ```
@@ -63,6 +64,8 @@ This branch allows you to run the Medical Records Summary Tool locally on Window
 **"Permission denied"**: Run as administrator or check file permissions
 
 **"Module not found"**: Make sure you installed requirements-local.txt
+
+**PDF processing issues**: The app uses pypdf (pure Python) instead of PyMuPDF for better Windows compatibility
 
 ## File Structure
 

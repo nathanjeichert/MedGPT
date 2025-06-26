@@ -25,11 +25,15 @@ from io import BytesIO
 import tiktoken
 import base64
 try:
-    import fitz  # PyMuPDF for PDF chunking
-    PYMUPDF_AVAILABLE = True
+    from pypdf import PdfReader, PdfWriter
+    PDF_LIBRARY_AVAILABLE = True
 except ImportError:
-    PYMUPDF_AVAILABLE = False
-    print("Warning: PyMuPDF not installed. PDF chunking will be limited.")
+    try:
+        from PyPDF2 import PdfReader, PdfWriter
+        PDF_LIBRARY_AVAILABLE = True
+    except ImportError:
+        PDF_LIBRARY_AVAILABLE = False
+        print("Warning: pypdf or PyPDF2 not installed. PDF chunking will be limited.")
 
 # OpenAI API limits for PDF processing
 MAX_PDF_PAGES = 100
@@ -65,8 +69,8 @@ class PDFProcessor:
     
     def get_pdf_info(self, filepath: Path) -> Dict[str, Any]:
         """Get PDF information (page count, size) without processing."""
-        if not PYMUPDF_AVAILABLE:
-            logger.warning("PyMuPDF not available for PDF info extraction")
+        if not PDF_LIBRARY_AVAILABLE:
+            logger.warning("PDF library not available for PDF info extraction")
             return {
                 "page_count": 1,
                 "size_mb": filepath.stat().st_size / (1024 * 1024),
@@ -74,10 +78,10 @@ class PDFProcessor:
             }
         
         try:
-            doc = fitz.open(str(filepath))
-            page_count = len(doc)
-            size_mb = filepath.stat().st_size / (1024 * 1024)
-            doc.close()
+            with open(filepath, 'rb') as f:
+                reader = PdfReader(f)
+                page_count = len(reader.pages)
+                size_mb = filepath.stat().st_size / (1024 * 1024)
             
             needs_chunking = page_count > MAX_PDF_PAGES or size_mb > MAX_PDF_SIZE_MB
             
@@ -96,8 +100,8 @@ class PDFProcessor:
     
     def chunk_pdf(self, filepath: Path) -> List[Path]:
         """Split PDF into chunks if it exceeds OpenAI limits."""
-        if not PYMUPDF_AVAILABLE:
-            logger.warning("PyMuPDF not available for PDF chunking")
+        if not PDF_LIBRARY_AVAILABLE:
+            logger.warning("PDF library not available for PDF chunking")
             return [filepath]
         
         info = self.get_pdf_info(filepath)
@@ -106,29 +110,31 @@ class PDFProcessor:
         
         chunks = []
         try:
-            doc = fitz.open(str(filepath))
-            total_pages = len(doc)
-            pages_per_chunk = MAX_PDF_PAGES
+            with open(filepath, 'rb') as f:
+                reader = PdfReader(f)
+                total_pages = len(reader.pages)
+                pages_per_chunk = MAX_PDF_PAGES
+                
+                chunk_num = 0
+                for start_page in range(0, total_pages, pages_per_chunk):
+                    end_page = min(start_page + pages_per_chunk, total_pages)
+                    chunk_num += 1
+                    
+                    # Create new PDF with pages in range
+                    writer = PdfWriter()
+                    for page_num in range(start_page, end_page):
+                        writer.add_page(reader.pages[page_num])
+                    
+                    # Save chunk with descriptive name
+                    chunk_filename = f"{filepath.stem}_chunk_{chunk_num}_pages_{start_page+1}-{end_page}.pdf"
+                    chunk_path = filepath.parent / chunk_filename
+                    
+                    with open(chunk_path, 'wb') as chunk_file:
+                        writer.write(chunk_file)
+                    
+                    chunks.append(chunk_path)
+                    logger.info(f"Created chunk {chunk_num}: {chunk_filename} (pages {start_page+1}-{end_page})")
             
-            chunk_num = 0
-            for start_page in range(0, total_pages, pages_per_chunk):
-                end_page = min(start_page + pages_per_chunk - 1, total_pages - 1)
-                chunk_num += 1
-                
-                # Create new PDF with pages in range
-                chunk_doc = fitz.open()
-                chunk_doc.insert_pdf(doc, from_page=start_page, to_page=end_page)
-                
-                # Save chunk with descriptive name
-                chunk_filename = f"{filepath.stem}_chunk_{chunk_num}_pages_{start_page+1}-{end_page+1}.pdf"
-                chunk_path = filepath.parent / chunk_filename
-                chunk_doc.save(str(chunk_path))
-                chunk_doc.close()
-                
-                chunks.append(chunk_path)
-                logger.info(f"Created chunk {chunk_num}: {chunk_filename} (pages {start_page+1}-{end_page+1})")
-            
-            doc.close()
             return chunks
             
         except Exception as e:
