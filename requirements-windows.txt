@@ -1,0 +1,9 @@
+flask==3.0.0
+werkzeug==3.0.1
+openai==1.10.0
+python-docx==1.1.0
+pypdf==4.0.1
+requests==2.31.0
+jinja2==3.1.2
+# tiktoken excluded - requires Rust compiler on Windows
+# The app will use approximate token counting instead

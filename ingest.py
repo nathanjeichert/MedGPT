@@ -22,7 +22,12 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 import hashlib
 from io import BytesIO
-import tiktoken
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    print("Warning: tiktoken not installed. Using approximate token counting.")
 import base64
 try:
     from pypdf import PdfReader, PdfWriter
@@ -294,8 +299,11 @@ class MedicalRecordsSummarizer:
         self.client = OpenAI(api_key=api_key)
         self.model = "gpt-4.1-nano"  # Use nano model for cost efficiency with multimodal capabilities
         self.pdf_processor = PDFProcessor(self.client)
-        # Initialize tokenizer for token counting
-        self.encoding = tiktoken.encoding_for_model("gpt-4")
+        # Initialize tokenizer for token counting (if available)
+        if TIKTOKEN_AVAILABLE:
+            self.encoding = tiktoken.encoding_for_model("gpt-4")
+        else:
+            self.encoding = None
     
     def cleanup(self):
         """Clean up any uploaded files."""
@@ -316,6 +324,10 @@ class MedicalRecordsSummarizer:
 
     def count_tokens(self, text: str) -> int:
         """Count tokens in a text string."""
+        if not TIKTOKEN_AVAILABLE or self.encoding is None:
+            # Use approximate count when tiktoken not available
+            return len(text) // 4
+            
         try:
             return len(self.encoding.encode(text))
         except Exception as e:

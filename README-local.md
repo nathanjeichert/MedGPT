@@ -17,10 +17,19 @@ This branch allows you to run the Medical Records Summary Tool locally on Window
    git checkout local-development
    ```
 
-2. **Install dependencies** (pure Python, no C++ compiler needed):
+2. **Install dependencies**:
+   
+   **Option A - Full installation** (includes precise token counting):
    ```bash
    pip install -r requirements-local.txt
    ```
+   
+   **Option B - Windows-compatible** (if tiktoken fails to install):
+   ```bash
+   pip install -r requirements-windows.txt
+   ```
+   
+   Note: Option B uses approximate token counting but all other features work normally.
 
 3. **Set your OpenAI API Key**:
    
@@ -67,12 +76,15 @@ This branch allows you to run the Medical Records Summary Tool locally on Window
 
 **PDF processing issues**: The app uses pypdf (pure Python) instead of PyMuPDF for better Windows compatibility
 
+**tiktoken build errors**: Use `requirements-windows.txt` instead - you'll get approximate token counts but all features work
+
 ## File Structure
 
 ```
 local_uploads/          # Uploaded files (created automatically)
 uploads/               # Temporary processing files
-requirements-local.txt # Dependencies without Google Cloud
+requirements-local.txt # Full dependencies without Google Cloud
+requirements-windows.txt # Windows-compatible (no tiktoken)
 run-local.py          # Local development server
 README-local.md       # This file
 ```
