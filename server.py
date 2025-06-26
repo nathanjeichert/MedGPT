@@ -212,25 +212,36 @@ def get_progress(task_id):
 
 def process_medical_records_sync(form_data, session_id):
     """Process medical records synchronously for local development."""
+    print(f"Processing sync function called with session_id: {session_id}")
+    
     # Get form data
     client_name = form_data.get('clientName', 'Client')
     case_prompt = form_data.get('casePrompt', '')
     auto_split = form_data.get('autoSplit') == 'true'
     generate_lawyer_docs = form_data.get('generateLawyerDocs') == 'true'
     
+    print(f"Form data: client={client_name}, prompt={case_prompt}, auto_split={auto_split}, gen_docs={generate_lawyer_docs}")
+    
     # Get API key from environment
     api_key = os.environ.get('OPENAI_API_KEY')
     if not api_key:
         raise RuntimeError('OpenAI API key not found')
     
+    print("API key found")
+    
     # Create temporary directory for processing
     temp_dir = Path(tempfile.mkdtemp())
     
     try:
+        print(f"Created temp dir: {temp_dir}")
+        
         # Get files from storage
         session = upload_sessions.get(session_id)
         if not session:
-            raise RuntimeError('Upload session not found')
+            print(f"Available sessions: {list(upload_sessions.keys())}")
+            raise RuntimeError(f'Upload session {session_id} not found')
+        
+        print(f"Found session with {len(session['files'])} files")
         
         downloaded_files = []
         
@@ -238,9 +249,14 @@ def process_medical_records_sync(form_data, session_id):
             storage_path = file_info['storage_path']
             filename = file_info['filename']
             
+            print(f"Processing file: {filename} from {storage_path}")
+            
             # Copy from local storage
             source_path = LOCAL_UPLOAD_DIR / storage_path
+            print(f"Looking for file at: {source_path}")
+            
             if not source_path.exists():
+                print(f"File not found: {source_path}")
                 continue
                 
             # Create local file path in temp dir
@@ -250,6 +266,9 @@ def process_medical_records_sync(form_data, session_id):
             # Copy file
             shutil.copy2(source_path, local_path)
             downloaded_files.append(local_path)
+            print(f"Copied file to: {local_path}")
+        
+        print(f"Downloaded {len(downloaded_files)} files")
         
         if not downloaded_files:
             raise RuntimeError('No files found in storage')
@@ -652,13 +671,18 @@ def process_medical_records():
         if LOCAL_MODE:
             # For local development, process synchronously to avoid async issues
             try:
+                print(f"Starting local processing for session {session_id}")
                 result = process_medical_records_sync(form_data, session_id)
+                print(f"Processing completed successfully: {result}")
                 return jsonify({
                     'success': True,
                     'task_id': task_id,
                     'result': result
                 })
             except Exception as e:
+                print(f"Processing error: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 return jsonify({'error': f'Processing failed: {str(e)}'}), 500
         else:
             # For cloud, use async processing
