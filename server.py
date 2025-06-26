@@ -202,23 +202,13 @@ def upload_file(session_id, filename):
 
 @app.route('/api/progress/<task_id>')
 def get_progress(task_id):
-    """Get processing progress via Server-Sent Events."""
-    def generate():
-        # Check if task exists, if not send error and exit
-        if task_id not in progress_store:
-            yield f"data: {json.dumps({'status': 'error', 'message': 'Task not found'})}\n\n"
-            return
-            
-        while task_id in progress_store:
-            progress = progress_store[task_id]
-            yield f"data: {json.dumps(progress)}\n\n"
-            
-            if progress.get('status') == 'completed' or progress.get('status') == 'error':
-                break
-                
-            time.sleep(0.5)  # Update every 500ms
+    """Get processing progress - simplified for local development."""
+    # Just return current status without streaming
+    if task_id not in progress_store:
+        return jsonify({'status': 'error', 'message': 'Task not found'}), 404
     
-    return Response(generate(), mimetype='text/event-stream')
+    progress = progress_store[task_id]
+    return jsonify(progress)
 
 def process_medical_records_from_storage(task_id, form_data, session_id):
     """Process medical records from local or cloud storage asynchronously."""

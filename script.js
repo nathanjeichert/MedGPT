@@ -244,52 +244,40 @@ class MedicalRecordsProcessor {
 
     async trackProgress(taskId) {
         return new Promise((resolve, reject) => {
-            // Use fetch with text/plain to get progress updates
+            // Simple polling instead of Server-Sent Events for local development
             const checkProgress = async () => {
                 try {
                     const response = await fetch(`/api/progress/${taskId}`);
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-                    
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        
-                        const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
-                        
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                try {
-                                    const jsonData = line.substring(6);
-                                    console.log('Raw progress data:', jsonData);
-                                    const data = JSON.parse(jsonData);
-                                    
-                                    this.updateProgress(data.progress || 0, data.message || 'Processing...');
-                                    
-                                    if (data.status === 'completed') {
-                                        this.currentResultId = data.result_id;
-                                        this.showResults(data.stats);
-                                        resolve();
-                                        return;
-                                    } else if (data.status === 'error') {
-                                        this.showError(data.message || 'Processing failed');
-                                        reject(new Error(data.message));
-                                        return;
-                                    }
-                                } catch (e) {
-                                    console.error('Failed to parse progress data:', line, 'Error:', e);
-                                    console.error('Raw chunk received:', chunk);
-                                }
-                            }
-                        }
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
+                    
+                    const data = await response.json();
+                    console.log('Progress data:', data);
+                    
+                    this.updateProgress(data.progress || 0, data.message || 'Processing...');
+                    
+                    if (data.status === 'completed') {
+                        this.currentResultId = data.result_id;
+                        this.showResults(data.stats);
+                        resolve();
+                        return;
+                    } else if (data.status === 'error') {
+                        this.showError(data.message || 'Processing failed');
+                        reject(new Error(data.message));
+                        return;
+                    }
+                    
+                    // Continue polling every 2 seconds
+                    setTimeout(checkProgress, 2000);
+                    
                 } catch (error) {
                     console.error('Progress tracking error:', error);
                     reject(error);
                 }
             };
             
+            // Start checking progress
             checkProgress();
         });
     }
