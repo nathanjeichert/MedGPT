@@ -274,7 +274,23 @@ def process_medical_records_sync(form_data, session_id):
             raise RuntimeError('No files found in storage')
         
         # Process files with REAL OpenAI API calls
-        engine = MedicalRecordsEngine(api_key=api_key)
+        print("Initializing MedicalRecordsEngine...")
+        
+        # Clear any proxy environment variables that might interfere
+        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+        original_proxy_values = {}
+        for var in proxy_vars:
+            if var in os.environ:
+                original_proxy_values[var] = os.environ[var]
+                del os.environ[var]
+        
+        try:
+            engine = MedicalRecordsEngine(api_key=api_key)
+            print("MedicalRecordsEngine initialized successfully")
+        finally:
+            # Restore proxy environment variables
+            for var, value in original_proxy_values.items():
+                os.environ[var] = value
         
         # Process the case with real AI
         summary = engine.process_case(temp_dir, case_prompt)

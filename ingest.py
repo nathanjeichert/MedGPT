@@ -296,7 +296,12 @@ class MedicalRecordsSummarizer:
     """Generates AI summaries of medical records using OpenAI's multimodal API."""
     
     def __init__(self, api_key: str):
-        self.client = OpenAI(api_key=api_key)
+        # Initialize OpenAI client with minimal parameters to avoid proxy issues
+        self.client = OpenAI(
+            api_key=api_key,
+            timeout=60.0,
+            max_retries=3
+        )
         self.model = "gpt-4.1-nano"  # Use nano model for cost efficiency with multimodal capabilities
         self.pdf_processor = PDFProcessor(self.client)
         # Initialize tokenizer for token counting (if available)
@@ -893,7 +898,12 @@ class LawyerDocumentGenerator:
     """Generates Word documents for lawyers from medical records JSON data."""
     
     def __init__(self, api_key: str):
-        self.client = OpenAI(api_key=api_key)
+        # Initialize OpenAI client with minimal parameters to avoid proxy issues
+        self.client = OpenAI(
+            api_key=api_key,
+            timeout=60.0,
+            max_retries=3
+        )
         self.model = "gpt-4.1-nano-2025-04-14"
     
     def generate_overview_document(self, json_data: Dict, client_name: str, case_prompt: str, output_path: Path) -> Path:
